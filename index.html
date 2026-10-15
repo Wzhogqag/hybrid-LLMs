@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marconi 混合前缀缓存：驱逐策略与源码解析</title>
+<style>
+:root{--bg:#f5f7fb;--paper:#fff;--ink:#172033;--muted:#5b667a;--line:#dce3ee;--blue:#2457c5;--bluebg:#edf3ff;--green:#13795b;--greenbg:#eaf8f1;--amber:#8a5700;--amberbg:#fff5df;--red:#a33030;--redbg:#fff0f0;--code:#111827}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+main{max-width:1000px;margin:0 auto;padding:28px 20px 64px}
+header{background:linear-gradient(135deg,#172c56,#2859a8);color:white;padding:34px 32px;border-radius:18px;margin-bottom:22px}
+header h1{font-size:clamp(25px,4vw,36px);line-height:1.25;margin:0 0 12px} header p{margin:0;color:#e4ecff}
+nav,.panel{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px 24px;margin:18px 0}
+nav a{color:var(--blue);text-decoration:none} nav ol{margin:8px 0 0;padding-left:24px;columns:2} nav li{break-inside:avoid}
+h2{font-size:25px;line-height:1.3;margin:34px 0 12px;padding-bottom:9px;border-bottom:2px solid var(--line)}
+h3{font-size:19px;margin:24px 0 8px} p{margin:10px 0} ul,ol{padding-left:25px}
+.callout{padding:14px 16px;border-radius:10px;margin:14px 0;border-left:4px solid var(--blue);background:var(--bluebg)}
+.good{background:var(--greenbg);border-color:var(--green)}.warn{background:var(--amberbg);border-color:#d69a23}.danger{background:var(--redbg);border-color:#c44}
+.small{font-size:14px;color:var(--muted)} code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#eef1f6;padding:2px 5px;border-radius:5px;font-size:.92em}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--code);color:#e5e7eb;padding:16px;border-radius:10px;overflow:auto;font-size:13px;line-height:1.65}
+.formula{font-family:Georgia,"Times New Roman",serif;font-size:19px;background:#f7f9fd;border:1px solid var(--line);padding:13px 16px;border-radius:9px;overflow-wrap:anywhere;margin:10px 0}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}th{background:#edf1f8}
+.tree{display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px;background:#f8faff;border:1px solid var(--line);border-radius:12px}
+.node{border:1px solid #9eb4d9;background:white;border-radius:9px;padding:8px 16px;text-align:center;min-width:150px}
+.node.hot{background:#e8f2ff;border-color:#4c7bc7}.node.shared{background:#fff5df;border-color:#d69a23}.arrow{color:#8190a8;font-size:20px;line-height:1}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.metric{border:1px solid var(--line);border-radius:10px;padding:14px;background:#fff}.metric strong{display:block;font-size:18px;color:var(--blue)}
+footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+@media(max-width:680px){main{padding:14px 12px 40px}header{padding:25px 20px}nav ol{columns:1}.two,.three{grid-template-columns:1fr}.panel{padding:16px}table{display:block;overflow-x:auto}}
+@media print{body{background:white}main{max-width:none;padding:0}header{background:#eaf0fb;color:#172033}header p{color:#394967}.panel,nav{break-inside:avoid}a{color:#172033}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Marconi 混合前缀缓存：驱逐策略与源码解析</h1>
+  <p>从矩阵 FLOPs 基础、KV/SSM State，到源码级内存管理、策略回放与驱逐</p>
+  <p class="small" style="color:#dce7ff;margin-top:12px">学习目标：理解“保留一个缓存节点到底值不值”，并能把论文公式对应到实现代码。</p>
+</header>
+
+<nav>
+  <strong>目录</strong>
+  <ol>
+    <li><a href="#model">先建立模型：树里存的是什么</a></li>
+    <li><a href="#lru">普通 LRU 为什么常从叶子驱逐</a></li>
+    <li><a href="#merge">Marconi 如何驱逐单子节点</a></li>
+    <li><a href="#benefit">计算收益：保留它能少算多少</a></li>
+    <li><a href="#memory">内存成本：保留它要占多少</a></li>
+    <li><a href="#eff">计算效率：收益除以内存</a></li>
+    <li><a href="#score">最终打分与选谁驱逐</a></li>
+    <li><a href="#alpha">α 如何根据工作负载自动选择</a></li>
+    <li><a href="#replay-walkthrough">逐请求手算回放：不同 α 为什么选出不同结果</a></li>
+    <li><a href="#foundations">从矩阵乘法推导 8LD²、16LD²</a></li>
+    <li><a href="#states-basics">什么是 Linear、激活与 SSM State</a></li>
+    <li><a href="#allocator-source">源码追踪：KV、SSM、逻辑树与物理内存</a></li>
+    <li><a href="#appendix-formulas">附录：逐层 FLOPs 与状态内存公式</a></li>
+    <li><a href="#refs">命中叶子后，父节点引用数会增加吗</a></li>
+    <li><a href="#caveats">源码阅读时的注意点</a></li>
+    <li><a href="#summary">完整流程总结</a></li>
+  </ol>
+</nav>
+
+<section id="model">
+<h2>1. 先建立模型：树里存的是什么</h2>
+<p>Marconi 面向的是同时含 Attention 层和递归式 SSM/Mamba 层的混合模型。前缀缓存命中时，系统希望复用已经算好的状态，跳过重复的 prefill 计算。</p>
+<div class="two">
+  <div class="panel">
+    <h3>Attention：KV Cache</h3>
+    <p>保存前缀 token 对应的 Key/Value。KV 大体随序列长度增长：前缀越长，KV 通常越多。</p>
+  </div>
+  <div class="panel">
+    <h3>Mamba / SSM：递归状态</h3>
+    <p>保存处理完某段前缀后的状态。对给定模型配置，状态大小通常不随此前 token 数线性增长；但重算长前缀的状态可能很贵。</p>
+  </div>
+</div>
+<p>Radix Tree 把共享前缀组织成树。一个节点的 <code>value</code> 通常表示该节点自己负责的一段 token，而不是整条从 Root 开始的路径。沿 Root 到节点的路径拼起来，才是完整前缀。</p>
+<div class="tree">
+  <div class="node">Root</div><div class="arrow">↓</div>
+  <div class="node shared">A：共享前缀</div>
+  <div style="display:flex;gap:36px;justify-content:center;width:100%">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:7px"><span class="arrow">↙</span><div class="node">B：分支 1</div><span class="arrow">↓</span><div class="node hot">C：叶子</div></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:7px"><span class="arrow">↘</span><div class="node">D：分支 2</div><span class="arrow">↓</span><div class="node hot">E：叶子</div></div>
+  </div>
+</div>
+<p class="small">示意图。真实 Radix Tree 的一个节点可以包含多个 token；节点边界由压缩前缀树的分叉与插入过程决定。</p>
+<div class="callout"><strong>后面所有公式的关键：</strong>候选节点的计算收益通常按“当前节点相对父路径额外提供了什么”来估算，而不是把祖先已经能提供的收益重复算到每个后代节点上。</div>
+</section>
+
+<section id="lru">
+<h2>2. 普通 LRU 为什么常从叶子驱逐</h2>
+<p>LRU 的定义是优先淘汰最近最少使用的缓存项；它本身并没有规定必须删除叶子。树状前缀缓存的常见实现会把候选限制为叶子，以便删除操作简单且不会破坏仍然存在的后代路径。</p>
+<h3>为什么叶子比较容易删？</h3>
+<ul>
+<li>叶子没有子节点，删除时只需从父节点的 <code>children</code> 中移除它，并释放对应缓存状态。</li>
+<li>若直接删一个有多个子节点的内部节点，后代路径就会失去中间连接，必须额外重组树；而该内部节点可能代表多个请求共享的前缀。</li>
+<li>叶子删除后，如果父节点不再有任何子节点，父节点也变成叶子，可以被放进候选集合，继续参与后续驱逐。</li>
+</ul>
+<p>Marconi 仓库中的基线 <code>evict_v1()</code> 注释写着 “LRU on the leaf nodes”，并通过收集叶子、按时间优先级弹出、删除叶子来实现。因此准确说法是：<strong>这份实现的 V1 限定从叶子候选中做 LRU，而不是 LRU 理论上必然从叶子开始。</strong></p>
+<pre>leaves = self._collect_leaves()
+heapq.heapify(leaves)
+
+while bytes_evicted &lt; bytes_to_remove and leaves:
+    x = heapq.heappop(leaves)  # 取最旧候选
+    self._delete_leaf(x)
+
+    if len(x.parent.children) == 0:
+        heapq.heappush(leaves, x.parent)</pre>
+<p class="small">以上是突出控制流程的摘录式示意，便于阅读；请以仓库当前版本的完整函数为准。</p>
+</section>
+
+<section id="merge">
+<h2>3. Marconi 如何驱逐只有一个子节点的内部节点</h2>
+<p>Marconi V2 的候选不只有叶子，还包含恰好有一个子节点的节点。源码的候选筛选逻辑可概括为：</p>
+<pre>if len(cur_node.children) in [0, 1] and cur_node.value is not None:
+    candidates.append(cur_node)</pre>
+<table>
+<thead><tr><th>节点子节点数</th><th>是否候选</th><th>直觉</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>是，叶子</td><td>可以直接移除该分支及其状态。</td></tr>
+<tr><td>1</td><td>是，单子节点内部节点</td><td>可以释放这个中间检查点的 SSM 状态，并把路径与子节点合并。</td></tr>
+<tr><td>2 个或更多</td><td>通常不选</td><td>该节点是多个分支共享的前缀，直接移除会影响多条路径。</td></tr>
+</tbody>
+</table>
+<h3>单子节点为什么可以合并？</h3>
+<div class="two">
+  <div class="panel">
+    <strong>驱逐前</strong>
+    <div class="tree" style="margin-top:10px"><div class="node">父路径</div><div class="arrow">↓</div><div class="node shared">P：token 段 P<br>SSM(P) + KV(P)</div><div class="arrow">↓</div><div class="node hot">C：token 段 C<br>SSM(C) + KV(C)</div></div>
+  </div>
+  <div class="panel">
+    <strong>驱逐 P 后（概念图）</strong>
+    <div class="tree" style="margin-top:10px"><div class="node">父路径</div><div class="arrow">↓</div><div class="node hot">合并后的节点<br>token 段 P + C<br>保留 C 的混合状态</div></div>
+  </div>
+</div>
+<p>代码中的关键操作可概括为：</p>
+<pre>new_node.value = node.value + child.value
+new_node.hybrid_states = child.hybrid_states
+new_node.children = child.children
+new_node.parent = node.parent</pre>
+<p>这意味着路径表示合并，合并后保留子节点的状态。对混合缓存而言，被驱逐中间节点的 SSM 状态被释放；子节点代表更长前缀的状态仍可保留。KV 路径/元数据会随节点重组而变化，不能把它简单描述成“只把一个字段设为 None，其他一切完全不动”。</p>
+<div class="callout good"><strong>准确表述：</strong>驱逐单子节点内部节点时，释放该中间节点自身的 SSM 状态，并将其 token 路径与子节点合并、保留子节点的混合状态。叶子节点的驱逐则是移除叶子及其对应缓存状态。</div>
+</section>
+
+<section id="benefit">
+<h2>4. 计算收益：保留它能少算多少 FLOPs？</h2>
+<p>这是最重要的一步。想象一个请求有 120 个输入 token，其中前 100 个 token 已经通过父路径覆盖；候选节点自身额外覆盖 20 个 token。</p>
+<div class="formula">L<sub>total</sub> = 120，　L<sub>parent</sub> = 100，　L<sub>node</sub> = 20</div>
+<p>当候选节点命中时，系统不需要从头重算完整的 120-token 前缀。父路径已覆盖的部分不应该再全部记到这个候选节点名下；该节点的收益要衡量它相对父路径增加了多少可避免计算。</p>
+<h3>4.1 Mamba / SSM 的计算收益</h3>
+<div class="formula">F<sub>SSM</sub>(n) = N<sub>SSM</sub> × F<sub>Mamba</sub>(L<sub>node</sub>)</div>
+<p><code>N_SSM</code> 是 SSM 层数；<code>F_Mamba</code> 是实现中用于估算 Mamba 处理指定长度 token 的 FLOPs 的函数。节点自身长度是 20，因此这个估算主要按这 20 个 token 的 SSM 计算来算。</p>
+<p>为什么长前缀可能很值钱？SSM 状态占用对固定模型配置通常近似固定，但从头处理更长 token 段的计算会增加。因此，固定大小的状态若能避免更多计算，其单位内存收益会更高。</p>
+<h3>4.2 Attention 的计算收益</h3>
+<div class="formula">F<sub>Attn</sub>(n) = N<sub>Attn</sub> × [F<sub>Attn</sub>(L<sub>total</sub>) − F<sub>Attn</sub>(L<sub>parent</sub>)]</div>
+<p>这里不是只算 20 个 token 的局部 Attention。Attention 的计算成本与上下文长度有关，新增 token 还要与前面的上下文交互，所以代码用“完整前缀的估算 FLOPs − 父路径前缀的估算 FLOPs”来估算增量。</p>
+<p>举例：如果处理 100-token 前缀的 Attention 估算为 1.0 单位，处理 120-token 前缀估算为 1.5 单位，那么当前节点对应的增量是 1.5 − 1.0 = 0.5 单位，而不是 1.5 单位。</p>
+<h3>4.3 MLP 的计算收益</h3>
+<div class="formula">预期形式：F<sub>MLP</sub>(n) = N<sub>MLP</sub> × [F<sub>MLP</sub>(L<sub>total</sub>) − F<sub>MLP</sub>(L<sub>parent</sub>)]</div>
+<p>MLP/FFN 通常按 token 逐个进行投影与非线性计算，因此增量收益可理解为新增 token 对应的 MLP 计算量。若每个 token 的 MLP 计算量近似固定，新增 20 个 token 就大致对应 20 个 token 的 MLP 计算。</p>
+<div class="callout warn"><strong>源码审查提醒：</strong>当前仓库 <code>radix_cache_hybrid.py</code> 的 <code>evict_v2()</code> 中，MLP savings 的减项写成了 <code>get_attn_flops(seqlen_parent, ...)</code>，而不是预期的 <code>get_mlp_flops(seqlen_parent, ...)</code>。因此，理解算法时应使用上面的“MLP 总量差分”作为概念模型，同时把实际实现中的这行视为值得核查的疑似笔误/实现问题，不能默默把它当作正确公式。</div>
+<h3>4.4 把不同层的收益相加</h3>
+<div class="formula">F<sub>saved</sub>(n) = F<sub>SSM</sub>(n) + F<sub>Attn</sub>(n) + F<sub>MLP</sub>(n)</div>
+<p>三个部分分别估算缓存命中后能避免的 SSM、Attention 和 MLP 计算，然后求和。注意它是模型计算量的估算指标，不等于真实墙钟时间；GPU kernel、带宽、并行度、批处理等都会影响实际延迟。</p>
+</section>
+
+<section id="memory">
+<h2>5. 内存成本：保留它要占多少字节？</h2>
+<p>计算收益回答“能少算多少”；内存成本回答“为这份收益要一直占用多少缓存空间”。源码将候选节点的内存估算为 SSM 状态内存加 KV 内存：</p>
+<div class="formula">M(n) = N<sub>SSM</sub> × M<sub>SSM-state</sub> + N<sub>Attn</sub> × M<sub>KV</sub>(L<sub>total</sub>)</div>
+<ul>
+<li><code>N_SSM × M_SSM-state</code>：所有 SSM 层的状态总量。对于固定模型配置，通常与该节点之前累计的 token 数没有线性关系。</li>
+<li><code>N_Attn × M_KV(L_total)</code>：Attention 层的 KV 缓存量，通常随完整前缀长度增长。</li>
+<li><code>L_total</code> 是从根到节点的完整前缀长度，而非仅当前节点的 token 数；这反映了该缓存检查点所代表的前缀状态。</li>
+</ul>
+<p>假设某节点的 SSM 状态合计 8 MB，KV 缓存合计 12 MB，则：</p>
+<div class="formula">M(n) = 8 MB + 12 MB = 20 MB</div>
+<p>这里的数字仅为解释用的假设值，并非论文实验数据或某个特定模型的实测结果。</p>
+<div class="callout"><strong>重要直觉：</strong>KV 通常随序列长度增长；SSM 状态的存储大小对固定模型配置通常较固定。于是长前缀的 SSM 状态可能用相近的内存，避免掉更多前缀计算；这正是只看“最近访问时间”不够的原因之一。</div>
+</section>
+
+<section id="eff">
+<h2>6. 计算效率：收益除以内存</h2>
+<div class="formula">E(n) = F<sub>saved</sub>(n) / M(n)</div>
+<p>这个值可以读成：<strong>每占用一个字节（或同一单位的内存），缓存命中时能避免多少 FLOPs。</strong> 分子越大越好，分母越小越好，因此比值越高，内存使用效率越高。</p>
+<h3>用数字走一遍</h3>
+<p>下面是假设的三个候选节点。为便于理解，计算收益使用“百万 FLOPs”的抽象单位，内存用 MB；数字仅用于演示。</p>
+<table>
+<thead><tr><th>节点</th><th>计算收益</th><th>内存成本</th><th>效率 = 收益/内存</th><th>解释</th></tr></thead>
+<tbody>
+<tr><td>A：短前缀</td><td>100</td><td>10 MB</td><td>10</td><td>绝对收益不高，但很省内存。</td></tr>
+<tr><td>B：长前缀</td><td>600</td><td>30 MB</td><td>20</td><td>占用较多内存，但每 MB 节省的计算最多。</td></tr>
+<tr><td>C：内存大、收益一般</td><td>180</td><td>30 MB</td><td>6</td><td>单位内存换来的计算收益最少。</td></tr>
+</tbody>
+</table>
+<div class="three">
+<div class="metric"><span class="small">节点 A</span><strong>100 ÷ 10 = 10</strong><span class="small">中等效率</span></div>
+<div class="metric"><span class="small">节点 B</span><strong>600 ÷ 30 = 20</strong><span class="small">最高效率</span></div>
+<div class="metric"><span class="small">节点 C</span><strong>180 ÷ 30 = 6</strong><span class="small">最低效率</span></div>
+</div>
+<p>如果只看绝对计算收益，C 的收益 180 大于 A 的 100，似乎 C 更有价值；但按内存归一化后，A 每 MB 节省 10 单位计算，C 每 MB 只节省 6 单位。内存有限时，C 更可能成为低效率候选。</p>
+<p>但这还不是最终决定。Marconi 还会考虑最近访问程度：即使某节点效率很高，如果长期没有访问，也可能被驱逐；反之，最近刚命中的节点即使效率一般，也可能暂时留下。</p>
+</section>
+
+<section id="score">
+<h2>7. 最终打分与选谁驱逐</h2>
+<p>Marconi 将计算效率与最近访问程度合成一个 utility score。论文中的表达式为：</p>
+<div class="formula">S(n) = recency(n) + α × flop_efficiency(n)</div>
+<p>其中 recency 与 flop efficiency 都归一化到相同范围，避免单位不同的量直接相加；<code>α</code> 控制计算效率的权重。<strong>分数越高，越值得保留；分数最低的候选节点优先驱逐。</strong></p>
+<h3>分数由两部分构成</h3>
+<div class="two">
+<div class="panel">
+<h3>Recency：最近是否访问</h3>
+<div class="formula">原始信号 ≈ 1 / (当前时间 − 最后访问时间)</div>
+<p>刚访问过的节点，时间差小，倒数大，归一化后通常得到更高的 recency 分数。</p>
+</div>
+<div class="panel">
+<h3>FLOP efficiency：单位内存收益</h3>
+<div class="formula">原始效率 = FLOPs saved / bytes</div>
+<p>能用较少内存节省大量计算的节点，效率分数更高，更有保留价值。</p>
+</div>
+</div>
+<h3>打分例子</h3>
+<p>假设归一化后，节点 A 的 recency = 0.9、效率 = 0.2；节点 B 的 recency = 0.2、效率 = 0.9。为演示，令 α = 1：</p>
+<table>
+<thead><tr><th>节点</th><th>Recency</th><th>效率</th><th>总分 S</th><th>结果</th></tr></thead>
+<tbody><tr><td>A：刚访问但效率低</td><td>0.9</td><td>0.2</td><td>1.1</td><td>更值得保留</td></tr><tr><td>B：较久未访问但效率高</td><td>0.2</td><td>0.9</td><td>1.1</td><td>同分，实际结果取决于具体数值和并列处理</td></tr></tbody>
+</table>
+<p>如果 B 的效率进一步提高，或 A 的 recency 降低，B 的总分就可能更高。这个例子说明算法不是单独按某一个指标排序，而是在两者之间做权衡。</p>
+<div class="callout warn"><strong>α 的含义：</strong>α 越大，算法越重视计算效率；α 越小，越重视最近访问程度。α = 0 时，公式退化为只看 recency 的策略（在其他实现细节相同的前提下）。论文/实验代码还涉及通过工作负载调节 α；不要把示例中的 α = 1 当成仓库固定默认值。</div>
+<h3>一次驱逐迭代</h3>
+<ol>
+<li>收集所有叶子和单子节点。</li>
+<li>对每个候选计算预计 FLOPs 节省量。</li>
+<li>估算该节点对应的 SSM 状态和 KV 内存。</li>
+<li>算出 FLOPs/byte，分别归一化效率和 recency。</li>
+<li>用 <code>recency + α × efficiency</code> 计算 utility。</li>
+<li>挑最低分候选：叶子直接删除；单子节点则释放自身 SSM 状态并与子节点合并。</li>
+<li>累计释放的内存还不够时，重新收集候选并继续。</li>
+</ol>
+</section>
+
+
+<section id="alpha">
+<h2>8. α 的自适应选择：启动采样 → 回放搜索 → 应用最优权重</h2>
+<p>前面只讲了 <code>S(n) = normalized_recency(n) + α × normalized_efficiency(n)</code>，但真实工作负载随时间变化，最佳 α 不是先验常数。Marconi 用启动期真实请求来调权。</p>
+<div class="tree">
+<div class="node">启动：α = 0，按 LRU 驱逐</div><div class="arrow">↓</div>
+<div class="node">第一次驱逐：记录此前请求数 R，并保存 radix tree 快照</div><div class="arrow">↓</div>
+<div class="node">Bootstrap：继续用 LRU，并记录请求的 token 级信息</div><div class="arrow">↓</div>
+<div class="node">达到采样窗口后，并行回放同一批请求，测试不同 α</div><div class="arrow">↓</div>
+<div class="node hot">更新 α，继续在线服务</div>
+</div>
+<h3>窗口和搜索的具体设置</h3>
+<table><thead><tr><th>环节</th><th>论文描述</th><th>GitHub 当前实现的对应项</th></tr></thead><tbody>
+<tr><td>初值</td><td>首次驱逐前 α = 0，先按 LRU 运行</td><td><code>eff_weight=0</code></td></tr>
+<tr><td>采样窗口</td><td>首次驱逐前请求数的 5–15 倍</td><td><code>bootstrap_multiplier=5</code>（仓库默认；窗口长度为 <code>5 × R</code>，并非运行时自动在 5–15 倍间选择）</td></tr>
+<tr><td>候选集合</td><td>对 α 做网格搜索</td><td>默认 <code>0, 0.1, 0.2, …, 2.0</code>，共 21 个候选</td></tr>
+<tr><td>并行</td><td>在 CPU 核心上并行回放，服务可继续进行</td><td><code>ProcessPoolExecutor(max_workers=NUM_CPUS)</code> 并行执行候选配置的模拟</td></tr>
+<tr><td>目标函数</td><td>论文段落表述为最大化 hit rate</td><td><strong>源码选择的是回放中的 <code>total_flops_savings</code> 最大者</strong>，而非直接取 request/token hit rate 最大值</td></tr>
+</tbody></table>
+<div class="callout warn"><strong>论文与代码存在可验证的差异：</strong>你引用的论文文字写“选择命中率最高的 α”；公开 <a href="https://github.com/ruipeterpan/marconi/blob/main/config_tuner.py" target="_blank" rel="noopener"><code>config_tuner.py</code></a> 则把模拟结果存成 <code>(request_hit_rate, token_hit_rate, total_flops_savings)</code>，随后使用 <code>max(results, key=lambda k: results[k][2])</code> 按 FLOPs 节省量选 α。阅读/复现实验时应明确区分论文表述与对应代码版本。</div>
+<h3>一个可复现的计算例子</h3>
+<p>假定第一次驱逐前共有 R = 100 次请求。按仓库默认值，接下来收集 500 次请求作为 bootstrap 样本；用相同的树快照和这 500 次请求，分别模拟 α = 0、0.1、…、2.0 对缓存替换的影响，再按设定的目标函数比较。<strong>这样比较的是同一批工作负载下的反事实结果</strong>，不是在生产路径上把 21 种 α 各运行一遍。</p>
+<pre># 对应实现逻辑的简化伪代码（不是逐字源码）
+alpha = 0
+R = requests_seen_before_first_eviction
+bootstrap_window = 5 * R  # 仓库默认值
+snapshot = clone(radix_tree_at_first_eviction)
+trace = collect_next_requests(bootstrap_window)
+results = parallel_replay(snapshot, trace,
+                          alphas=[0.0, 0.1, ..., 2.0])
+alpha = argmax(results, key=total_flops_savings)  # 公开代码</pre>
+<p>为什么不是固定取一个大 α？不同工作负载的前缀重用频率、路径长度和状态大小分布不同：有的适合偏向“最近命中”，有的适合偏向“每字节能够省下更多 FLOPs”。这相当于用少量启动样本为驱逐策略做一次 workload-specific 校准。</p>
+</section>
+
+
+<section id="replay-walkthrough">
+<h2>8A. 从零手算一次调参回放：5 个请求、2 个 α、每一步都能核对</h2>
+<div class="callout good"><strong>先记住一句话：</strong>回放时模型不跑 GPU，只模拟“查找前缀 → 命中统计 → 插入缓存 → 内存不足时驱逐”。两个 α 使用<strong>同一个初始快照、同一批按顺序到来的请求和相同容量</strong>。不同 α 只会通过“驱逐哪个节点”影响未来能命中的前缀。</div>
+<h3>Step 0：把实验条件写清楚</h3>
+<p>构造一个故意很小的玩具模型（并非论文真实模型），方便整数手算：<code>D = 4</code>、<code>N = 2</code>，<code>Attention = 1 层</code>、<code>SSM = 1 层</code>、<code>MLP = 1 层</code>；按源码默认 <code>expand = 2</code>、<code>conv_kernel = 4</code>，所有状态元素各占 2 bytes。</p>
+<p>先令每条无共享前缀的独立缓存路径视为一个可淘汰的“条目”（<strong>这是教学抽象；真实 Marconi 会管理压缩树节点和不同类型的状态</strong>）。缓存总容量为 <strong>320 bytes</strong>。三段前缀如下，互不共享 token：</p>
+<table><thead><tr><th>名称</th><th>token IDs</th><th>长度</th><th>缓存字节数（如下计算）</th></tr></thead><tbody>
+<tr><td><strong>P</strong></td><td><code>[11,12]</code></td><td>2</td><td>144 bytes</td></tr>
+<tr><td><strong>Q</strong></td><td><code>[21,22,23,24]</code></td><td>4</td><td>176 bytes</td></tr>
+<tr><td><strong>R</strong></td><td><code>[31,32]</code></td><td>2</td><td>144 bytes</td></tr>
+</tbody></table>
+<p>为什么是 144 和 176？注意 <em>MLP 虽然贡献 FLOPs，但不存历史 KV/SSM 缓存</em>：</p>
+<div class="formula">SSM 状态 = 2DN + 2(eD + 2N)k = 2×4×2 + 2×(2×4+2×2)×4 = <strong>112 bytes</strong></div>
+<div class="formula">Attention KV = 4LD = 16L bytes；所以 <strong>M(2)=112+32=144</strong>，<strong>M(4)=112+64=176</strong>。</div>
+<p>按时间顺序收到五个请求；为专注回放机制，假定输出为空（因此插入的是输入 token 序列），且启动时的模拟缓存为空：</p>
+<table><thead><tr><th>时刻</th><th>请求</th><th>输入 token 数</th><th>说明</th></tr></thead><tbody>
+<tr><td>t1</td><td>P</td><td>2</td><td>首次出现 P</td></tr><tr><td>t2</td><td>Q</td><td>4</td><td>首次出现 Q</td></tr><tr><td>t3</td><td>P</td><td>2</td><td>再访问 P，让 P 比 Q 更新近</td></tr><tr><td>t4</td><td>R</td><td>2</td><td>触发容量不足，α 开始发挥作用</td></tr><tr><td>t5</td><td>Q</td><td>4</td><td>检验 Q 在 t4 后是否仍被保留</td></tr>
+</tbody></table>
+<h3>Step 1～3：所有候选策略的缓存都相同</h3>
+<table><thead><tr><th>时刻</th><th>查前缀（回放时不执行模型）</th><th>操作后缓存</th><th>已占空间</th></tr></thead><tbody>
+<tr><td>t1：P</td><td>未命中，<code>h₁=0</code>；插入 P</td><td>{P}</td><td>144</td></tr>
+<tr><td>t2：Q</td><td>未命中，<code>h₂=0</code>；插入 Q</td><td>{P,Q}</td><td>144+176=<strong>320</strong></td></tr>
+<tr><td>t3：P</td><td>命中 P 的全部 2 token，<code>h₃=2</code>；刷新 P 时间戳</td><td>{P,Q}</td><td>320</td></tr>
+</tbody></table>
+<h3>Step 4：R 到来，容量不够，模拟两种 α</h3>
+<p>要插入 R（144 bytes），而已有 P+Q 占用 320 bytes，必须先淘汰至少一个条目。此时 P 最近访问、Q 较久之前访问；假设根据候选集合做 min-max 归一化后恰好得到：</p>
+<table><thead><tr><th>候选</th><th>访问新近程度 R(n)</th><th>节省 FLOPs / byte 归一化 E(n)</th></tr></thead><tbody>
+<tr><td>P（最近用过，但效率低）</td><td><strong>1</strong></td><td><strong>0</strong></td></tr><tr><td>Q（更旧，但效率高）</td><td><strong>0</strong></td><td><strong>1</strong></td></tr>
+</tbody></table>
+<p class="small">此处 R、E 的归一化值为特意构造的教学数据，用来展示 α 的作用；不声称它们恰好由上面玩具模型的真实节点评分算出。实际代码按具体节点 FLOPs 效率、时间戳以及候选集合归一化。</p>
+<div class="formula">score(P)=1+α×0=<strong>1</strong>；score(Q)=0+α×1=<strong>α</strong>。<strong>分数低的先驱逐</strong>。</div>
+<div class="two">
+<div class="metric"><strong>α = 0（纯近期性）</strong><p>score(P)=1，score(Q)=0 → <strong>驱逐 Q</strong>，腾出 176 bytes，插入 R。</p><p>t4 后缓存 = <code>{P,R}</code>，占用 288 bytes。</p></div>
+<div class="metric"><strong>α = 2（效率权重更高）</strong><p>score(P)=1，score(Q)=2 → <strong>驱逐 P</strong>，腾出 144 bytes，插入 R。</p><p>t4 后缓存 = <code>{Q,R}</code>，占用 320 bytes。</p></div>
+</div>
+<p>这就是整个网格搜索为什么有意义的唯一关键：<strong>同一请求序列，缓存状态从 t4 起发生了分叉。</strong></p>
+<h3>Step 5：再次请求 Q，比较两个模拟结果</h3>
+<div class="two">
+<div class="metric"><strong>α=0 的副本</strong><p>Q 在 t4 被淘汰了，所以 <strong>t5 未命中：h₅=0</strong>；这次无法省下 Q 的前缀计算。</p></div>
+<div class="metric"><strong>α=2 的副本</strong><p>Q 还在缓存，所以 <strong>t5 命中全部 4 token：h₅=4</strong>；可以跳过对应前缀计算。</p></div>
+</div>
+<h3>把“节省 FLOPs”真的算成数字</h3>
+<p>使用本文件下一章的近似 FLOPs 公式，令 <code>D=4, N=2</code>、三类层各一层：</p>
+<div class="formula">F<sub>attn</sub>(h)=8hD²+4h²D=<strong>128h+16h²</strong></div>
+<div class="formula">F<sub>ssm</sub>(h)=12hD²+16hDN+10hD=<strong>360h</strong></div>
+<div class="formula">F<sub>mlp</sub>(h)=16hD²=<strong>256h</strong></div>
+<p>先看 <strong>t3 命中 P 的 2 个 token</strong>：</p>
+<table><thead><tr><th>类型</th><th>代 h=2 的计算</th><th>可节省 FLOPs</th></tr></thead><tbody>
+<tr><td>Attention</td><td>128×2 + 16×2²</td><td>320</td></tr><tr><td>SSM</td><td>360×2</td><td>720</td></tr><tr><td>MLP</td><td>256×2</td><td>512</td></tr><tr><th colspan="2">t3 合计</th><th>1552</th></tr>
+</tbody></table>
+<p>再看 <strong>t5：α=2 命中 Q 的 4 个 token</strong>：</p>
+<table><thead><tr><th>类型</th><th>代 h=4 的计算</th><th>可节省 FLOPs</th></tr></thead><tbody>
+<tr><td>Attention</td><td>128×4 + 16×4²</td><td>768</td></tr><tr><td>SSM</td><td>360×4</td><td>1440</td></tr><tr><td>MLP</td><td>256×4</td><td>1024</td></tr><tr><th colspan="2">t5 合计</th><th>3232</th></tr>
+</tbody></table>
+<div class="callout good"><strong>最后的结果：</strong><br>α=0：只在 t3 省下 1552 FLOPs；<strong>total_flops_savings = 1552</strong>。<br>α=2：t3 省 1552、t5 再省 3232；<strong>total_flops_savings = 1552+3232=4784</strong>。<br>所以如果只测试 {0,2}，并以总节省 FLOPs 为目标，就选 <strong>α=2</strong>。</div>
+<h3>hit rate 也用同一张“命中记录”计算</h3>
+<table><thead><tr><th>策略</th><th>每次请求的复用 token 数 (h₁…h₅)</th><th>Request Hit Rate</th><th>Token Hit Rate</th><th>Total FLOPs saved</th></tr></thead><tbody>
+<tr><td>α=0</td><td><code>[0,0,2,0,0]</code></td><td>1/5 = 20%</td><td>2/(2+4+2+2+4)=<strong>14.29%</strong></td><td><strong>1552</strong></td></tr>
+<tr><td>α=2</td><td><code>[0,0,2,0,4]</code></td><td>2/5 = 40%</td><td>6/14 = <strong>42.86%</strong></td><td><strong>4784</strong></td></tr>
+</tbody></table>
+<p>真正的 21 个候选 α 也是同样的办法，只不过要同时运行 21 个独立的逻辑缓存副本，依次回放数百个请求，然后为每一个 α 形成一组 <code>(request_hit_rate, token_hit_rate, total_flops_savings)</code>，按目标函数取最大值。</p>
+<h3>可交互验算：拖动 α 看第 4 步将淘汰谁</h3>
+<div class="panel" style="background:#f7fbff">
+<label for="alphaRange"><strong>当前 α：</strong><output id="alphaValue">0.0</output></label>
+<input id="alphaRange" type="range" min="0" max="2" step="0.1" value="0" style="width:100%;accent-color:#2457c5" aria-label="设置 alpha 权重">
+<div class="two">
+<div class="metric">P 的分数<strong id="scoreP">1.0</strong></div><div class="metric">Q 的分数<strong id="scoreQ">0.0</strong></div>
+</div>
+<p id="alphaDecision" class="callout">α = 0：Q 的分数更低 → 淘汰 Q → t5 请求 Q 不命中。</p>
+<p><strong id="alphaSavings">本候选模拟节省：1552 FLOPs</strong></p>
+<p class="small">当 α=1 时两者评分相同，结果受实现的候选遍历和并列处理规则影响，故不在此断言固定驱逐谁。该交互仅演示本节刻意构造的 2 项候选场景，并非原仓库逐行仿真。</p>
+</div>
+<h3>把它与 Marconi 的真实代码对应起来</h3>
+<pre># 伪代码：突出“每个候选有独立缓存树”
+for alpha in [0.0, 0.1, ..., 2.0]:
+    tree = deepcopy(snapshot)              # 复制相同起点
+    tree.eff_weight = alpha                # 唯一改变的驱逐权重
+    for input_ids, output_ids in trace:     # 顺序完全相同
+        h = tree.match_prefix(input_ids)    # 记录命中 token 数
+        tree.insert(input_ids + output_ids,  # 模拟缓存状态落地
+                    state_at_leaf=..., state_at_branchoff=...)
+        # 插入中若容量不够，按当前 alpha 的评分进行驱逐
+    results[alpha] = tree.get_cache_stats()
+
+best_alpha = max(results, key=lambda a: results[a][2])
+# [0] 请求命中率；[1] token 命中率；[2] 总 FLOPs 节省</pre>
+<div class="callout warn"><strong>三个不要混淆的量：</strong>① <em>节点 FLOPs/byte</em> 用来决定“缓存不够时驱逐哪个”；② <em>请求命中的 token 数 h</em> 决定“这次请求省了多少计算”；③ <em>total_flops_savings</em> 把回放期每次请求的估算节省相加，用来<strong>选择哪一个 α</strong>。这三个分别发生在缓存淘汰、请求命中、全批次调参三个层面。</div>
+<p class="small">实现细节提醒：仓库的 <code>get_cache_stats(last_n=tuning_interval)</code> 默认可以只统计最近 500 条回放请求；Attention 的 FLOPs 代理函数按每次命中的 h 分别计算再求和，不能一般性地先把所有 h 求和再放进含 h² 的函数。此例仅有两个命中事件，因此可以直接逐项相加。</p>
+</section>
+<script>
+(function(){
+const slider=document.getElementById('alphaRange');
+if(!slider)return;
+const value=document.getElementById('alphaValue'),scoreQ=document.getElementById('scoreQ'),decision=document.getElementById('alphaDecision'),savings=document.getElementById('alphaSavings');
+function update(){const a=+slider.value;value.textContent=a.toFixed(1);scoreQ.textContent=a.toFixed(1);
+if(a<1){decision.textContent='Q 的分数 '+a.toFixed(1)+' 低于 P 的 1.0 → 淘汰 Q → t5 请求 Q 不命中。';savings.textContent='本候选模拟节省：1552 FLOPs';}
+else if(a>1){decision.textContent='P 的分数 1.0 低于 Q 的 '+a.toFixed(1)+' → 淘汰 P → t5 请求 Q 命中 4 token。';savings.textContent='本候选模拟节省：4784 FLOPs';}
+else {decision.textContent='P 和 Q 都是 1.0 分：出现并列；具体驱逐取决于模拟器的并列处理。';savings.textContent='本候选模拟节省：取决于并列处理';}}
+slider.addEventListener('input',update);update();})();
+</script>
+
+
+<section id="foundations">
+<h2>9A. 从最基础的矩阵乘法推导：8LD² 究竟是哪来的？</h2>
+<div class="callout"><strong>建议学习顺序：</strong>先搞懂 ①“一个乘加为何约算 2 FLOPs”；②“矩阵的形状为何产生 LD²”；③“Q/K/V/O 四次投影为何产生系数 8”。这里不需要预先懂 CUDA。</div>
+<h3>① FLOPs 是什么？为什么矩阵乘法有一个系数 2？</h3>
+<p>FLOP 表示一次浮点操作。计算单个向量点积 <code>y = a₁b₁ + a₂b₂ + … + aₖbₖ</code>，有 <code>k</code> 次乘法和约 <code>k</code> 次加法，估算为 <strong>2k FLOPs</strong>（严格计数为 k 次乘法与 k−1 次加法；这里沿论文惯用近似）。</p>
+<p>如果 <code>A</code> 的形状为 <code>[m,k]</code>，<code>B</code> 为 <code>[k,n]</code>，则输出 <code>C=A×B</code> 的形状为 <code>[m,n]</code>，一共有 <code>m×n</code> 个输出元素，每个需要约 <code>2k</code> FLOPs：</p>
+<div class="formula"><strong>FLOPs(matmul) ≈ 2 × m × n × k</strong></div>
+<h3>② 为什么 Linear 层会有 LD²？</h3>
+<p>假设一次处理 <strong>L 个 token</strong>，每个 token 的隐藏向量有 <strong>D 个浮点数</strong>。堆叠后的输入 <code>X</code> 的形状就是 <code>[L,D]</code>。一个保持维度不变的线性层使用权重 <code>W:[D,D]</code>，输出 <code>Y=XW:[L,D]</code>：</p>
+<pre>X [L,D]  ×  W [D,D]  →  Y [L,D]
+                ↑              ↑
+         每个输出点积 D 项     共有 L×D 个输出
+FLOPs = (L×D) × (约 2D) = 2LD²</pre>
+<div class="callout good">这里 <strong>L</strong> 代表批量中的序列长度，<strong>D²</strong> 不是把 token 数平方，而是权重矩阵有 D×D 的输入输出连接。系数 <strong>2</strong> 来自乘法和加法都计入 FLOPs。</div>
+<h3>③ Attention 的 8LD²：Q、K、V 和 Output 共四个 Linear</h3>
+<p>以源码使用的简化全维度注意力模型为例，Q、K、V、输出投影，每个都按 <code>[L,D] × [D,D]</code> 计算：</p>
+<table><tr><th>操作</th><th>矩阵形状</th><th>FLOPs</th></tr><tr><td>Q = XWq</td><td>[L,D] × [D,D]</td><td>2LD²</td></tr><tr><td>K = XWk</td><td>相同</td><td>2LD²</td></tr><tr><td>V = XWv</td><td>相同</td><td>2LD²</td></tr><tr><td>O = AttentionResult·Wo</td><td>[L,D] × [D,D]</td><td>2LD²</td></tr><tr><th>四个 Linear 合计</th><th></th><th>8LD²</th></tr></table>
+<p>然后是 Attention 自身的两次矩阵乘法（所有注意力头的维度加起来为 D）：</p>
+<pre>Q [L,D] × Kᵀ [D,L] → Scores [L,L]   : 2L²D
+Prob [L,L] × V [L,D] → Context [L,D]: 2L²D
+合计                                    : 4L²D</pre>
+<div class="formula"><strong>F_attention(L) ≈ 8LD² + 4L²D</strong></div>
+<p class="small">softmax、归一化等操作在这里被省略或视作低阶项。此式是 Marconi <a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py#L17-L41">utils.py 第 17–41 行</a> 采用的成本模型；GQA/MQA/MLA 或具体架构不一定满足四个等大的 D×D 投影。</p>
+<h3>④ MLP 的 16LD²：先扩张到 4D，再收缩到 D</h3>
+<pre>第一层: [L,D] × [D,4D] → [L,4D]  : 2 × L × D × 4D = 8LD²
+激活函数: [L,4D]                 : 低阶项，公式忽略
+第二层: [L,4D] × [4D,D] → [L,D] : 2 × L × 4D × D = 8LD²
+合计                            : 16LD²</pre>
+<p>MLP 的激活函数（如 GELU/SiLU）让两层 Linear 的组合成为非线性变换。源码中的 <code>16LD²</code> 是<strong>两层、扩张 4 倍</strong>的简化模型；不能不经修正直接套在每个 SwiGLU/MoE 结构上。源码：<a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py#L44-L59">get_mlp_flops()</a>。</p>
+<h3>⑤ 用小数字实际计算一次</h3>
+<p>设 <code>L=3</code>、<code>D=4</code>，一次 D→D Linear 有 <code>2×3×4×4=96 FLOPs</code>；Q/K/V/O 四个 Linear 就是 <code>4×96=384</code>；注意力乘法两项为 <code>4×3²×4=144</code>，总计 <strong>528 FLOPs</strong>。而 MLP 为 <code>16×3×4²=768 FLOPs</code>。因此这些系数是具体矩阵形状计算出来的，而非经验常数。</p>
+<h3>⑥ SSM 的 12LD² + 16LDN + 10LD 如何理解？</h3>
+<p><code>12LD²</code> 源于 Mamba 内部若干个以 D 或 2D 为主要宽度的投影；<code>16LDN</code> 是与宽度 D、递归状态维度 N 同时相关的投影、门控与 scan 等操作；<code>10LD</code> 是逐元素/卷积等操作的聚合近似。各项的具体推导需结合 Mamba1 架构和 expand=2 的假设，<strong>不是每一个常数都由单个 Linear 产生</strong>。</p>
+<pre># 公开源码给出的分组（非逐个 kernel 的性能测量）
+# utils.py: get_mamba1_flops(l,d,n)
+matmul_terms = 12 * L * D**2
+vector_terms = 16 * L * D * N
+scalar_terms = 10 * L * D
+F_ssm = matmul_terms + vector_terms + scalar_terms</pre>
+<p>源码注释逐项列出 input projection、1D conv、dt projection、scan、output 等，且说明最初版本末项误写为 <code>10L</code>，camera-ready 改为 <code>10LD</code>。详见 <a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py#L61-L98">utils.py 第 61–98 行</a>。</p>
+</section>
+
+<section id="states-basics">
+<h2>9B. Linear 的“状态”到底是什么？区分参数、激活、KV Cache 和 SSM State</h2>
+<p>先说结论：<strong>普通 Linear 层并没有需要跨请求保存的“递归 State”。</strong> 你可能混淆了模型权重、每层计算得到的 hidden state（激活）和用于后续增量推理的缓存状态。</p>
+<table><tr><th>对象</th><th>示例、形状</th><th>什么时候保存？</th><th>是否计入 Marconi 的前缀缓存？</th></tr>
+<tr><td>模型参数（权重）</td><td>Linear 的 Wq:[D,D]、W1:[D,4D]</td><td>模型加载时存入显存；不同请求共享</td><td>否；它是模型本体，不是每条请求的历史</td></tr>
+<tr><td>hidden state / 激活</td><td>第 ℓ 层 token t 的 x<sub>t</sub><sup>(ℓ)</sup> ∈ R<sup>D</sup></td><td>前向计算时产生，送往下一算子/层；不意味着永久保留</td><td>一般否；计算图中临时张量另算</td></tr>
+<tr><td>Attention KV Cache</td><td>历史 token 的 K、V；每层随 token 增长</td><td>生成后续 token 时要用</td><td>是</td></tr>
+<tr><td>SSM 递归状态</td><td>处理到 t 时的 h<sub>t</sub>，随 token 更新</td><td>计算下一个 token 要用；也可在前缀边界存检查点</td><td>是</td></tr>
+<tr><td>Conv1D 历史窗口</td><td>最近若干 token 的中间特征</td><td>递归/流式卷积使用</td><td>是（Marconi 的 Mamba 状态成本包含它）</td></tr></table>
+<p>把一个普通 Linear 写成 <code>y_t = W x_t + b</code>：<code>W</code> 是<strong>模型参数</strong>，<code>x_t/y_t</code> 是<strong>本次 token 的激活</strong>；下个 token 不需要先读取 Linear 的某个可更新内部状态。与之相反，SSM 的简化递归为：</p>
+<div class="formula">h<sub>t</sub> = A<sub>t</sub>h<sub>t−1</sub> + B<sub>t</sub>x<sub>t</sub>； &nbsp; y<sub>t</sub> = C<sub>t</sub>h<sub>t</sub></div>
+<p>这个 <code>h_t</code> 才是<strong>随着输入序列不断更新、下一 token 必须依赖的 State</strong>。若某个前缀是 <code>[A,B,C]</code>，保留下处理完 C 的 h<sub>3</sub>，就可以从 D 继续推进；但若要在 B 分叉产生另一条请求，仅有 h<sub>3</sub> 通常无法逆推出 h<sub>2</sub>，因此要在 B 处另存检查点，或从更早的检查点重新计算。</p>
+<div class="tree"><div class="node shared">共同前缀 [A,B]：SSM 检查点 h₂；KV(A,B)</div><div class="arrow">↙　　　　　　　　　↘</div><div class="two" style="width:100%"><div class="node">请求 1 继续 C：h₃；KV(C)</div><div class="node">请求 2 继续 D：h'₃；KV(D)</div></div></div>
+<p>而 MLP 虽然在命中前缀后也可以<strong>跳过重算</strong>，但不是因为缓存了各个 MLP 的 hidden state，而是因为这个前缀对应的 KV 和 SSM 状态已经足够让后续增量计算从正确位置继续。因此 <code>F_mlp</code> 计入“节省的计算”，MLP 不单独计入“历史状态缓存字节”。</p>
+</section>
+
+<section id="allocator-source">
+<h2>9C. 从 Marconi 源码追踪内存：逻辑节点、状态对象、字节数、物理位置</h2>
+<div class="callout warn"><strong>先划定证据边界：</strong>公开 artifact 的 <code>radix_cache_hybrid.py</code> 实现的是<strong>Radix Tree 缓存策略/容量模拟</strong>；未展示 KV page table、CUDA allocator、GPU block pool 或显存地址映射。论文谈到的 Jenga 物理分配器设计与这份可运行 Python artifact 的实际实现层次必须分开看；不能根据 <code>capacity_bytes</code> 推断已分配物理显存。</div>
+<h3>① 逻辑索引：前缀 token 决定找哪一个 TreeNode</h3>
+<pre># radix_cache_hybrid.py，类结构摘录
+class HybridStates:
+    def __init__(self, input_ids=None, mamba_states=None, kv_cache=None):
+        self.input_ids = input_ids
+        self.mamba_states = mamba_states  # SSM 和卷积状态
+        self.kv_cache = kv_cache          # 当前节点片段的 KV
+
+class TreeNode:
+    def __init__(self, logical_ts=None):
+        self.key = None       # 与父节点之间的 token ID 元组
+        self.value = None     # 当前节点管理的 token 片段
+        self.parent = None
+        self.children = defaultdict(TreeNode)
+        self.hybrid_states = None</pre>
+<p>源码证据：<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L18-L38">第 18–38 行</a>。<strong>TreeNode 不是物理内存页。</strong> <code>key/value/children/parent</code> 是逻辑前缀索引；<code>hybrid_states</code> 是准备关联模型状态的 Python 字段。</p>
+<h3>② KV 与 SSM 的不同粒度：一个按 token 增长，一个按检查点计数</h3>
+<div class="two"><div class="metric"><strong>KV：节点边上的 token</strong><p>父节点 [A,B]，子节点边 [C,D]，子节点的 KV 成本按 2 个 token 计算。树中不重复把父节点 [A,B] 的 KV 加入每个子节点边的 token 计数。</p><code>KV_bytes = A_layers × get_kvs_size(2,D)</code></div>
+<div class="metric"><strong>SSM：节点边界检查点</strong><p>每个非根节点按<strong>一份跨所有 SSM 层的边界状态</strong>计数，而不是节点里每个 token 都保存一个 SSM state。</p><code>SSM_bytes = S_layers × get_mamba_state_size(D,N)</code></div></div>
+<p>直接证据：<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L424-L434">第 424–434 行</a>的 <code>_get_num_cached_tokens_helper()</code>，每个非根节点为 <code>total_num_cached_mamba_states = 1</code>、<code>total_num_cached_kv_tokens = len(node.value)</code>。随后 <a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L170-L181">第 170–181 行</a>按两个计数分别乘单元成本。</p>
+<h3>③ 内存总账：完全由大小模型计算</h3>
+<pre># get_state_size() 简化摘录
+num_mamba_states, num_kv_tokens = self.get_num_cached_tokens()
+mamba_bytes = S_layers * num_mamba_states * get_mamba_state_size(D,N)
+kv_bytes = A_layers * get_kvs_size(num_kv_tokens,D)
+total_bytes = mamba_bytes + kv_bytes</pre>
+<p>源码证据：<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L170-L181">get_tree_size / get_state_size</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py#L101-L147">状态大小公式</a>。</p>
+<h3>④ 用论文默认 7B 参数算一次真实的“理论容量账”</h3>
+<p>取 <code>D=4096</code>、<code>N=128</code>、SSM 层数 <code>24</code>、Attention 层数 <code>4</code>、FP16。每个 Attention 层单 token KV = <code>2(K/V) × 4096 × 2 bytes = 16,384 bytes = 16 KiB</code>；4 层一共 <strong>65,536 bytes = 64 KiB/token</strong>。</p>
+<p>每个 SSM 层的边界状态为 <code>4096×128×2 + (2×4096+2×128)×4×2 = 1,116,160 bytes</code>；24 层共 <strong>26,787,840 bytes ≈ 25.55 MiB/检查点</strong>。</p>
+<table><tr><th>逻辑树内容</th><th>KV 成本</th><th>SSM 成本</th><th>合计</th></tr>
+<tr><td>一个非根节点，边上 8 个 token</td><td>8 × 64 KiB = 512 KiB</td><td>≈25.55 MiB</td><td>≈26.05 MiB</td></tr>
+<tr><td>如果插入导致新的分叉检查点 + 新的叶节点（两份边界 State）</td><td>新 token KV 按长度增量算</td><td>约 2 × 25.55 MiB</td><td>需合并 KV 增量另算</td></tr></table>
+<div class="callout">这组数字是<strong>论文/代码成本公式在默认模型参数下的估算</strong>，不代表实际 GPU 运行的显存测量。它说明为何 Marconi 关心减少低价值 SSM 检查点：一个检查点比一个 token 的 KV 贵很多。</div>
+<h3>⑤ 插入与分叉时具体发生什么？</h3>
+<pre># insert() 第 146–157 行的核心容量模型
+num_extra_tokens = len(token_ids) - prefix_len
+num_extra_mamba_states = 2 if branchoff_required else 1
+bytes_needed = (
+    num_extra_mamba_states * S_layers * get_mamba_state_size(D,N)
+    + A_layers * get_kvs_size(num_extra_tokens,D)
+)
+if get_tree_size() + bytes_needed > capacity_bytes:
+    evict(bytes_to_remove=...)</pre>
+<p>当当前请求与已存在的节点在中途分叉时，<code>_split_node()</code> 会创建新中间节点：中间节点存 <code>state_at_branchoff</code>，原节点保留自己的后缀，新的请求叶子存 <code>state_at_leaf</code>。相关代码：<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L146-L165">insert</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L299-L320">_split_node</a>。</p>
+<h3>⑥ 驱逐时释放的是哪一类状态？</h3>
+<table><tr><th>场景</th><th>源码结构操作</th><th>成本模型含义</th></tr><tr><td>驱逐叶子</td><td><code>_delete_leaf()</code> 将叶子从父节点 children 移除</td><td>叶子自有 token 的 KV + 一个 SSM 检查点都消失</td></tr><tr><td>驱逐只有一个子节点的中间节点</td><td><code>_evict_intermediate_node()</code> 将它与子节点合并、沿用子节点 <code>hybrid_states</code></td><td>逻辑上省掉被合并中间节点的一份 SSM 边界状态，保留覆盖路径的 KV token</td></tr></table>
+<p>证据：<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L381-L405">删除与合并</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L518-L524">驱逐时累计字节</a>。特别注意，合并逻辑包含源码作者注释 <code>needs more manipulations on the kvs</code>，也就是<strong>实际 KV 内存组织/搬移在这份代码中未完成</strong>。</p>
+<h3>⑦ 逻辑“地址”与物理 GPU 块：应该如何看图？</h3>
+<p><strong>下面右侧是典型页式 KV allocator 的教学示意，不是 Marconi 开源代码已实现的地址映射。</strong> 左边的前缀索引确实有源码依据，右边的“逻辑块→物理块”需要某个具体 serving engine 提供 block table、allocator、引用计数等代码才能验证。</p>
+<div class="two">
+<div class="panel"><h3>Marconi 代码实际证明的逻辑层</h3><pre>Token 前缀 [A,B]
+    ↓ key / children
+TreeNode X (value=[A,B])
+    ↓ hybrid_states
+状态对象 / 模拟状态 ID
+    ├─ mamba_states
+    └─ kv_cache</pre><p class="small">使用 Python TreeNode 和状态引用；回放实验可能用整数 ID 代替真实状态。</p></div>
+<div class="panel"><h3>页式 GPU 内存的概念示意（未在仓库证实）</h3><pre>请求逻辑位置 token[0:16]
+  ↓ block table[0] = 37
+物理 KV 块 #37  (GPU 地址片段)
+
+请求逻辑位置 token[16:32]
+  ↓ block table[1] = 8
+物理 KV 块 #8   (非连续也可以)
+
+SSM 边界检查点
+  ↓ 独立句柄 / buffer
+GPU 某状态存储区域</pre><p class="small">这需要 page allocator、GPU buffer 和 block table，不能只用 Radix Tree key 推断。</p></div>
+</div>
+<h3>⑧ 证据清单：哪些结论可以直接引用，哪些仍需要别的源码？</h3>
+<table><tr><th>问题</th><th>源码直接支持？</th><th>定位</th></tr>
+<tr><td>KV 和 SSM 是否在逻辑上分开计费？</td><td>是</td><td><a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L170-L181">get_state_size()</a></td></tr>
+<tr><td>KV 是否按节点自己的 token 数累计？</td><td>是</td><td><a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L424-L434">_get_num_cached_tokens_helper()</a></td></tr>
+<tr><td>SSM 是否按每节点一个边界检查点计数？</td><td>是（模拟容量模型）</td><td>同上</td></tr>
+<tr><td>分叉是否新增中间检查点？</td><td>是</td><td><a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py#L299-L320">_split_node()</a></td></tr>
+<tr><td>KV/SSM 在真实 GPU 中的物理页地址、分配、合并搬移？</td><td><strong>此 artifact 不能证明</strong></td><td>需要具体推理引擎内存分配器源码</td></tr>
+<tr><td>运行时代码能否逐字节执行论文描述的 Jenga allocator？</td><td><strong>不能据此断言</strong></td><td>公开文件列表中没有相应独立物理 allocator 实现</td></tr></table>
+<p>公开仓库：<a href="https://github.com/ruipeterpan/marconi">ruipeterpan/marconi</a>；重点文件：<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py">radix_cache_hybrid.py</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py">utils.py</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/config_tuner.py">config_tuner.py</a>。如果之后要继续追物理 page/block 生命周期，应另选已提供实际 GPU 内存后端的 SGLang/vLLM 代码，不应把两份代码当成同一实现。</p>
+</section>
+
+<section id="appendix-formulas">
+<h2>9. 附录公式：究竟如何估算 FLOPs 和占用字节？</h2>
+<p>先统一符号：<strong>L</strong> = token 序列长度；<strong>D</strong> = 模型隐藏维度；<strong>N</strong> = SSM 状态维度；<strong>A、S、P</strong> 分别为 Attention、SSM/Mamba 和 MLP 层数。下列 FLOPs 是论文/实现采用的近似前向计算模型，并不是所有模型架构的通用精确计数。</p>
+<h3>单层 FLOPs：长度为 L 的前缀</h3>
+<table><thead><tr><th>组件</th><th>一次处理 L 个 token 的 FLOPs</th><th>直观解释</th></tr></thead><tbody>
+<tr><td>Attention</td><td><code>F_attn(L) = 8LD² + 4L²D</code></td><td>线性投影贡献 O(LD²)，全注意力矩阵贡献 O(L²D)</td></tr>
+<tr><td>MLP</td><td><code>F_mlp(L) = 16LD²</code></td><td>此处假设与论文建模一致的前馈层形状</td></tr>
+<tr><td>SSM / Mamba</td><td><code>F_ssm(L) = 12LD² + 16LDN + 10LD</code></td><td>包含投影、递归状态更新等项；实现注释说明 camera-ready 修正了末项</td></tr>
+</tbody></table>
+<h3>状态内存：论文简化口径与源码实际口径</h3>
+<table><thead><tr><th>组件</th><th>缓存状态大小（字节）</th><th>假设 / 补充</th></tr></thead><tbody>
+<tr><td>单层 Attention KV</td><td><code>M_KV(L) = 2 × L × D × 2 = 4LD</code></td><td>K 和 V 各一份，元素按 FP16 的 2 字节计；这里用论文的简化维度设定</td></tr>
+<tr><td>单层 SSM 核心状态</td><td><code>M_SSM,core = 2DN</code></td><td>SSM 状态元素按 2 字节计；<strong>不随 L 增长</strong></td></tr>
+<tr><td>单层 SSM 完整状态</td><td><code>M_SSM,full = 2DN + 2( eD + 2N )k</code></td><td>加上 Conv1D 状态；<code>e</code> 为 expand 倍数、<code>k</code> 为卷积核宽。源码默认 e=2、k=4</td></tr>
+<tr><td>整模型缓存开销（示意）</td><td><code>M_total(L) = A × 4LD + S × M_SSM,full</code></td><td>按各层的类型相加；无状态的 MLP 本身不增加 KV/SSM cache</td></tr>
+</tbody></table>
+<div class="callout"><strong>为何公式里 Attention 有 L²，而 KV 只有 L？</strong> 完整前缀的注意力计算需要 token 两两交互；但已算完的每个 token 只需存对应 K/V。SSM 计算随前缀长度增长，但其最终递归状态大小（忽略卷积参数配置变化）不随历史长度增长。</div>
+<h3>从 FLOPs / byte 推出表格里的效率</h3>
+<div class="formula">Attention: F_attn(L) / M_KV(L) = (8LD² + 4L²D) / (4LD) = <strong>2D + L</strong></div>
+<div class="formula">SSM 核心状态口径: F_ssm(L) / M_SSM,core = L × <strong>(6D/N + 8 + 5/N)</strong></div>
+<p>SSM 比值采用上面已修正的源码末项 <code>10LD</code>，若按论文早期出现的 <code>10L</code> 末项，最后一项会写成 <code>5/(DN)</code>；两种写法的差别来自 FLOPs 公式版本，且不应与纳入卷积状态后的实际分母混淆。</p>
+<h3>把论文的 7B 混合模型参数代进去</h3>
+<p>以论文举例的 <strong>D = 4096、N = 128、S = 24 层 SSM、A = 4 层 Attention、P = 28 层 MLP</strong> 为例：</p>
+<div class="two"><div class="metric"><span class="small">单层 Attention 理论效率</span><strong>L + 8192 FLOPs/byte</strong><span class="small">随 L 线性增加</span></div><div class="metric"><span class="small">单层 SSM 核心状态理论效率</span><strong>约 200.04 × L FLOPs/byte</strong><span class="small">不计 Conv1D 状态时</span></div></div>
+<p>这说明在该理论成本模型中，越长的序列对应越高的 SSM 状态复用收益；但<strong>不能直接拿“200L”作为任意树节点的最终淘汰分数</strong>，还必须考虑节点相对于父路径新增长度、每层分工、已有父前缀及归一化。</p>
+<h3>从“单层理论效率”到“某个节点的候选效率”</h3>
+<p>设某个节点自己的边上有 <code>ΔL</code> 个 token，从根到该节点总共有 <code>L</code> 个 token，父节点路径长度为 <code>L₀ = L − ΔL</code>。节点级收益不能一律把完整 L 的 FLOPs 当成“节点独有”：</p>
+<pre># 按论文建模逻辑组织的节点级收益（修正为一致的 MLP 差分）
+F_saved(node) = S * F_ssm(ΔL)
+              + A * [F_attn(L) - F_attn(L₀)]
+              + P * [F_mlp(L)  - F_mlp(L₀)]
+
+M_node_proxy = S * M_SSM,full + A * M_KV(L)
+E_node = F_saved(node) / M_node_proxy</pre>
+<p>其中 <code>M_node_proxy</code> 表示源码为候选打分采用的<strong>状态成本代理</strong>，不应机械理解为“驱逐这个内部节点，真实一定释放这么多新字节”。释放字节的数量要结合叶子删除或单子节点合并的具体路径判断。</p>
+<div class="callout warn"><strong>源码勘误：</strong><a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py" target="_blank" rel="noopener"><code>radix_cache_hybrid.py</code></a> 的可见实现中，<code>flops_savings_mlp</code> 的减项写成了 <code>get_attn_flops(L₀, D)</code> 而不是预期的 <code>get_mlp_flops(L₀, D)</code>。上面展示的是数学上一致的差分，<strong>不代表源码原样如此执行</strong>。</div>
+<h3>对照源码</h3>
+<ul><li><a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py" target="_blank" rel="noopener"><code>utils.py</code></a>：<code>get_attn_flops()</code>、<code>get_mlp_flops()</code>、<code>get_mamba1_flops()</code>、<code>get_kvs_size()</code>、<code>get_mamba_state_size()</code></li>
+<li><a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py" target="_blank" rel="noopener"><code>radix_cache_hybrid.py</code></a>：候选节点的差分 FLOPs、状态成本代理、归一化及最终驱逐</li>
+<li><a href="https://github.com/ruipeterpan/marconi/blob/main/config_tuner.py" target="_blank" rel="noopener"><code>config_tuner.py</code></a>：网格搜索与最佳 α 的选择</li></ul>
+</section>
+
+<section id="refs">
+<h2>10. 命中叶子后，父节点引用数会增加吗？</h2>
+<p>要区分“被访问”“访问时间戳更新”“引用计数增加”这三件事。它们不是同一个操作。</p>
+<h3>Marconi 代码的匹配逻辑</h3>
+<p><code>match_prefix()</code> 通过树遍历找到最长可匹配前缀，并记录匹配路径上访问到的节点。V2 的时间戳更新重点在最深的匹配节点，而不是像传统树 LRU 那样把所有祖先都更新为刚访问过。</p>
+<pre># 概念性示意
+nodes_accessed.append(child)
+...
+nodes_accessed[-1].last_access_time = self.logical_ts</pre>
+<p>因此，如果匹配到叶子 C，C 的时间戳会更新；不能据此推断父节点 B 的时间戳也更新，更不能推断 B 的引用计数会增加。</p>
+<div class="callout good"><strong>结论：</strong>在这份 Marconi 研究实现里，所讨论的 <code>TreeNode</code> 路径没有通过 <code>ref_count</code>/<code>lock_count</code> 来完成上述驱逐策略的核心判断。匹配到叶子并不意味着父节点引用计数自动加一。</div>
+<p>生产推理引擎可能另外实现 pin/unpin、引用计数或锁，防止正在被请求使用的 KV 块被释放。但这是运行时并发和内存安全机制，必须检查具体引擎代码，不能仅凭 Marconi 的树缓存逻辑推导出来。</p>
+<h3>为什么父节点时间戳不更新仍然合理？</h3>
+<p>Marconi 的策略会把祖先 KV 视作可以由更深节点的缓存路径覆盖的内容；同时，祖先 SSM 状态本身并不是命中更深节点时必然需要单独复用的检查点。因此，如果每次命中叶子都把所有祖先标成“刚用过”，就会让一些低价值的中间检查点长期显得很热，妨碍释放其 SSM 状态。</p>
+</section>
+
+<section id="caveats">
+<h2>11. 源码阅读时的注意点</h2>
+<p>公式说明的是策略意图，代码决定了实际行为。阅读 <code>radix_cache_hybrid.py</code> 的 <code>evict_v2()</code> 时，至少要核查以下细节：</p>
+<ol>
+<li><strong>MLP 差分公式：</strong>当前可见实现中，<code>flops_savings_mlp</code> 的父路径减项调用了 <code>get_attn_flops(seqlen_parent, ...)</code>，而非 <code>get_mlp_flops(seqlen_parent, ...)</code>。这与常规的 MLP 差分公式不一致，可能是实现错误。</li>
+<li><strong>叶子释放内存的变量：</strong>同一函数中，叶子分支累计释放字节的表达式出现 <code>len(node.value)</code>，而真正选中的变量是 <code>node_to_evict</code>。需要检查该作用域中的 <code>node</code> 是否就是当前候选；若不是，可能导致内存释放量统计错误。</li>
+<li><strong>估算值不等于实测延迟：</strong>FLOPs/byte 是策略的代理指标，不直接等价于毫秒数，也未完整刻画 GPU 带宽、kernel 启动、批处理和并发影响。</li>
+<li><strong>候选不等于必删：</strong>节点满足“叶子或单子节点”只是进入候选集；是否被驱逐还要看 utility score 和当下需要释放的内存量。</li>
+<li><strong>论文与仓库版本可能有差异：</strong>论文公式用于理解设计，实际代码应以你检查的 commit 为准。读代码时最好记录仓库 commit hash，避免之后主分支变化导致行号或实现不同。</li>
+</ol>
+</section>
+
+<section id="summary">
+<h2>12. 完整流程总结</h2>
+<div class="tree">
+  <div class="node">请求匹配前缀</div><div class="arrow">↓</div>
+  <div class="node">记录最深匹配节点的访问时间</div><div class="arrow">↓</div>
+  <div class="node">收集叶子 + 单子节点候选</div><div class="arrow">↓</div>
+  <div class="node">计算每个节点可避免的 SSM / Attention / MLP FLOPs</div><div class="arrow">↓</div>
+  <div class="node">估算 SSM 状态 + KV 的内存成本</div><div class="arrow">↓</div>
+  <div class="node">效率 = 计算收益 / 内存成本</div><div class="arrow">↓</div>
+  <div class="node">归一化 Recency 与效率，计算 utility</div><div class="arrow">↓</div>
+  <div class="node shared">驱逐最低分候选</div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center">
+    <div class="node">叶子：直接删除</div><div class="node">单子节点：释放自身 SSM，合并路径</div>
+  </div>
+</div>
+<div class="callout good">
+<strong>一句话记忆：</strong>Marconi 在可安全处理的候选节点中，权衡“最近有没有用过”和“每单位缓存内存能避免多少计算”；它不只追求命中次数，还希望把有限的内存留给更有计算价值的前缀状态。
+</div>
+</section>
+
+<section class="panel">
+<h2 style="margin-top:0">参考资料与源码入口</h2>
+<ul>
+<li>Marconi 论文：<a href="https://arxiv.org/abs/2411.19379" target="_blank" rel="noopener">Marconi: Prefix Caching for the Era of Hybrid LLMs</a></li>
+<li>公式与状态大小：<a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py" target="_blank" rel="noopener"><code>utils.py</code></a></li>
+<li>α 调参：<a href="https://github.com/ruipeterpan/marconi/blob/main/config_tuner.py" target="_blank" rel="noopener"><code>config_tuner.py</code></a></li>
+<li>源码：<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py" target="_blank" rel="noopener"><code>radix_cache_hybrid.py</code></a></li>
+<li>实验复现说明：<a href="https://github.com/ruipeterpan/marconi/blob/main/artifact_evaluation.md" target="_blank" rel="noopener"><code>artifact_evaluation.md</code></a></li>
+</ul>
+<p class="small">本文将论文的概念公式、仓库可见实现和用于解释的假设数字分开说明。示例数字不是论文结果。涉及源码行为时，以链接所指仓库的实际版本为准。</p>
+</section>
+<footer>Marconi 学习笔记 · 可离线打开 · 可通过浏览器打印为 PDF</footer>
+</main>
+</body>
+</html>
