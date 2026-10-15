@@ -11,3 +11,7 @@ To publish as a website, enable GitHub Pages with **Deploy from a branch**, bran
 ## Qwen3.5-9B Extension Experiments
 
 [Hybrid prefix geometry extension experiments (Qwen3.5-9B)](./qwen3.5-9b-extension-experiments.html)
+
+## Marconi: Experiments and Implementation Evidence
+
+[Marconi experiments, SGLang+/vLLM+ baselines, TTFT methodology, and KV/SSM memory management (source audit)](./marconi-experiments-implementation-memory-analysis.html)
