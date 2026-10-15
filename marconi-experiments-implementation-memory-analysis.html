@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Marconi MLSys 2025 论文实验、SGLang+/vLLM+、TTFT、Radix Tree 与异构缓存内存管理源码考证。">
+<title>Marconi 实验、实现基底与异构缓存内存管理考证</title>
+<style>
+:root{color-scheme:dark;--bg:#0c111b;--panel:#151d2b;--panel2:#192437;--line:#2c3b50;--tx:#ebf2fa;--sub:#b4c1d1;--cyan:#7ed7f8;--green:#7ee0b6;--gold:#f2c879;--red:#f4a3a3}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--tx);font:15.5px/1.78 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}strong{color:#fff}h1{font-size:clamp(27px,3.5vw,41px);line-height:1.23;letter-spacing:-.035em;margin:8px 0 18px}h2{font-size:25px;line-height:1.35;margin:54px 0 16px}h3{font-size:19px;margin:29px 0 12px}h4{font-size:16px;margin:20px 0 8px}p{margin:11px 0;color:var(--sub)}ul,ol{padding-left:22px;color:var(--sub)}li{margin:6px 0}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:#223249;color:#b7e4ff;border-radius:4px;padding:1px 5px;font-size:.89em}pre{background:#0a101b;border:1px solid var(--line);padding:17px;border-radius:10px;overflow-x:auto;line-height:1.65;color:#d9e7f7;font-size:13px}pre code{background:none;padding:0;color:inherit}small,.small{font-size:12.5px;color:var(--sub)}.wrap{display:grid;grid-template-columns:244px minmax(0,970px);gap:36px;max-width:1320px;padding:0 26px;margin:0 auto}.side{position:sticky;top:0;align-self:start;height:100vh;padding:36px 12px 30px 0;overflow:auto;border-right:1px solid var(--line)}.side .brand{font-weight:800;color:var(--tx);font-size:17px;letter-spacing:.01em}.side .meta{color:#8195ae;font-size:12px;margin:5px 0 24px}.side a{display:block;color:#b6c8dc;font-size:13px;padding:7px 9px;border-radius:6px}.side a:hover{background:var(--panel);color:var(--cyan);text-decoration:none}.main{min-width:0;padding:52px 0 100px}.eyebrow{color:var(--gold);font-size:12px;font-weight:750;letter-spacing:.13em;text-transform:uppercase}.lead{font-size:17px;line-height:1.85;max-width:870px}.tag{border:1px solid var(--line);color:var(--sub);border-radius:99px;padding:3px 10px;font-size:12px;display:inline-block;margin:4px 5px 4px 0}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:22px 0}.card,.callout{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:18px}.card b{display:block;font-size:16px;margin-bottom:7px}.card p{font-size:13.5px;margin:5px 0}.callout{margin:18px 0;border-left:4px solid var(--cyan)}.callout.warning{border-left-color:var(--gold)}.callout.good{border-left-color:var(--green)}.callout strong{display:block;margin-bottom:5px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:11px;margin:18px 0 25px}table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:650px}th,td{padding:12px 13px;vertical-align:top;text-align:left;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:none}th{background:#202d40;color:#d9eafb;font-weight:650}td{color:#c2d0e0}tbody tr:nth-child(even){background:rgba(255,255,255,.018)}.source{font-size:12px;color:#89a3c0;white-space:normal}.rank{font-weight:750;color:var(--green)}.unknown{color:var(--gold)}.bad{color:var(--red)}.stage{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:20px 0}.stage>div{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);font-size:13px}.stage b{color:#fff}.arrow{text-align:center;color:var(--cyan);font-size:23px;align-self:center}.diagram{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:20px 0}.diagram .pane{border:1px solid var(--line);background:var(--panel);padding:18px;border-radius:12px}.node{border:1px solid #5c8298;border-radius:7px;padding:10px;text-align:center;margin:10px auto;max-width:310px;background:#142c3c}.wire{text-align:center;color:var(--cyan)}.slots{display:grid;grid-template-columns:1fr 1fr;gap:7px}.slot{padding:11px 8px;border:1px dashed #5f7b95;border-radius:7px;text-align:center;font-size:12px;color:#c7d6e8}.note{font-size:12px;color:#a4b8cc;margin:10px 0}.foot{border-top:1px solid var(--line);margin-top:62px;padding:24px 0;color:#8498b0;font-size:12px}details{border:1px solid var(--line);border-radius:10px;margin:10px 0;background:var(--panel)}summary{padding:13px 16px;cursor:pointer;font-weight:650}details>div{padding:0 16px 15px}.mini{font-size:12px;color:#91a6be}.sep{height:1px;background:var(--line);margin:25px 0}.print{float:right;border:1px solid var(--line);border-radius:8px;color:var(--tx);background:var(--panel);padding:7px 12px;cursor:pointer}.print:hover{background:var(--panel2)}@media(max-width:950px){.wrap{display:block;padding:0 18px}.side{position:relative;height:auto;border:0;padding:15px 0;border-bottom:1px solid var(--line)}.side nav{display:flex;overflow:auto;gap:3px}.side nav a{white-space:nowrap}.side .meta{display:none}.main{padding:31px 0 70px}.cards,.stage{grid-template-columns:1fr}.diagram{grid-template-columns:1fr}}@media print{body{background:#fff;color:#111; font-size:11px}.wrap{display:block}.side,.print{display:none}.main{padding:0}p,li,td{color:#222}.card,.callout,.diagram .pane{background:#fff}h2{break-after:avoid}a{color:#075e90}}
+</style>
+</head><body><div class="wrap">
+<aside class="side"><div class="brand">Marconi · Source Audit</div><div class="meta">MLSys 2025 · 实验 × 架构 × 源码<br>整理于 2026-10-15</div><nav>
+<a href="#verdict">00 / 核心结论</a><a href="#setup">01 / 实验设置及基线</a><a href="#figures">02 / 逐图实验解析</a><a href="#lineage">03 / 基于 SGLang 还是 vLLM</a><a href="#ttft">04 / TTFT 如何得到</a><a href="#tree">05 / 逻辑前缀与状态</a><a href="#memory">06 / 内存分配与地址</a><a href="#simulation">07 / 源码执行路径</a><a href="#evidence">08 / 证据分级</a><a href="#research">09 / 对研究主线的启示</a><a href="#refs">10 / 原始资料与代码</a></nav></aside>
+<main class="main">
+<div class="eyebrow">Evidence-driven research note · Paper &amp; artifact audit</div>
+<button class="print" onclick="window.print()">打印 / 保存 PDF</button>
+<h1>Marconi 的实验、实现基底与<br>异构缓存内存管理：论文和源码交叉考证</h1>
+<p class="lead">围绕五个问题：<strong>作者到底做了哪些实验？SGLang+ 和 vLLM+ 到底是什么？TTFT 是真实端到端测量还是回放估算？KV/SSM 如何组织与释放？统一 Radix Tree 是否意味着共用逻辑页或物理页？</strong>每条结论尽量指向论文段落或公开源码；严格区分设计、实现、推断与未知。</p>
+<div><span class="tag">Paper: MLSys 2025</span><span class="tag">Artifact: Python trace-driven simulator</span><span class="tag">Figure 6–13</span><span class="tag">源码证据链</span><span class="tag">Exact prefix reuse</span></div>
+<section id="verdict"><h2>00 / 先读核心结论</h2><div class="cards">
+<div class="card"><b>① 策略层成果明确</b><p>Marconi 解决的是 Hybrid KV + SSM 的准入和 FLOPs-aware 驱逐；其 Fig. 7/8 可以由公开 trace-driven artifact 复现。</p></div>
+<div class="card"><b>② 不是可见的 SGLang fork</b><p>思想与 SGLang RadixCache 接近，但开源实验入口直接使用独立 Python <code>RadixCache</code> / <code>RadixCacheVLLM</code> 模拟类。</p></div>
+<div class="card"><b>③ 物理地址不可验证</b><p>论文描述 KV 与 SSM 状态如何归属与淘汰，却没有公开完整的 GPU block table、state slot allocator 和两者映射代码。</p></div></div>
+<div class="callout warning"><strong>对“端到端”的审慎解释</strong>论文 §5.2 标为 <em>End-to-End Results</em>，并报告使用 vLLM 在四张 A100 上测量 Jamba-1.5-Mini。然而，公开的 Fig. 9 绘图程序按 <code>input_tokens - cached_tokens</code> 查找预先采样的 TTFT 曲线，属于<strong>模型性能画像 + 缓存 trace 回放</strong>的估算链；它不能独立证明三套完整 Hybrid Prefix Cache 推理服务均已实现和实测。参见 <a href="https://github.com/ruipeterpan/marconi/blob/main/plotting/ttft.py#L14-L20">ttft.py L14–20</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/plotting/ttft.py#L160-L188">L160–188</a>。</div>
+</section>
+<section id="setup"><h2>01 / §5.1 实验设置与系统基线</h2>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>论文使用的设置</th><th>解读与限制</th></tr></thead><tbody>
+<tr><td>主实验模型</td><td>7B Hybrid，4 Attention / 24 SSM / 28 MLP 层</td><td>策略模拟中的 FLOPs/内存成本参数，不应等同于 Jamba-1.5-Mini</td></tr>
+<tr><td>TTFT 测试模型</td><td>Jamba-1.5-Mini；12B active / 52B total，SSM dimension 128</td><td>论文称使用 vLLM 在 4× A100-40GB 上进行性能画像</td></tr>
+<tr><td>硬件环境</td><td>AWS p4d.24xlarge，8× A100-40GB，96 vCPU，1152 GB RAM</td><td>是完整实验硬件；不表示单个模拟回放使用全部 GPU</td></tr>
+<tr><td>数值精度</td><td>FP16</td><td>论文设定；SSM conv state 的额外占用在实验成本模型中计入</td></tr>
+<tr><td>工作负载</td><td>LMSys、ShareGPT、SWE-Agent/SWEBench</td><td>多轮会话，请求到达和间隔可参数化</td></tr>
+<tr><td>指标</td><td>Token Hit Rate、FLOPs Saved、P5/P50/P95 TTFT</td><td>Token 命中率 = 跳过 Prefill token 数 / 输入 token 总数</td></tr>
+<tr><td>Vanilla</td><td>不做 Prefix Caching</td><td>Prefill 全部输入</td></tr>
+<tr><td>vLLM+</td><td>每 32-token block 保存一个状态，使用细粒度检查点</td><td>是扩展 Hybrid 语义后的公平策略基线，不是原版 vLLM 原生 Hybrid Prefix Caching</td></tr>
+<tr><td>SGLang+</td><td>与 Marconi 相同的 judicious admission，eviction 保持 LRU</td><td>用于尽可能隔离 FLOPs-aware eviction 的贡献</td></tr>
+<tr><td>Marconi</td><td>Selective admission + recency/FLOPs 效率联合驱逐</td><td>对实际前缀价值和状态内存代价进行权衡</td></tr>
+</tbody></table></div>
+<p class="source">出处：<a href="https://proceedings.mlsys.org/paper_files/paper/2025/file/7c180af017258d239bac6248d1eb26ac-Paper-Conference.pdf">论文 §5.1 / PDF 第 8 页</a>；<a href="https://github.com/ruipeterpan/marconi/blob/main/artifact_evaluation.md">artifact_evaluation.md</a>。</p>
+<div class="callout"><strong>术语纠正：vLLM 当时“不支持”的究竟是什么？</strong>论文说当时 vLLM / SGLang 不原生支持<strong> Hybrid/SSM 模型的 Prefix Caching</strong>，而不是 vLLM 根本无法加载或推理 SSM 模型。否则就无法在 vLLM 中进行 Jamba 性能测量。支持模型执行 ≠ 支持跨请求复用其 recurrent states。</div>
+</section>
+<section id="figures"><h2>02 / 论文逐图实验：变量、对照、指标、结论</h2>
+<div class="table-wrap"><table><thead><tr><th>图</th><th>改变了什么</th><th>主要对照与指标</th><th>结果及实验能证明什么</th></tr></thead><tbody>
+<tr><td><b>Fig. 6</b><br>负载统计</td><td>三类真实轨迹输入与输出长度分布</td><td>LMSys、ShareGPT、SWEBench</td><td>解释差异来源：SWEBench 输入跨度很大，长度依赖的计算价值有更大发挥空间；不是策略效果实验</td></tr>
+<tr><td><b>Fig. 7</b><br>主结果</td><td>Marconi 对比固定块密集缓存</td><td>Marconi vs vLLM+；Token Hit Rate 分布</td><td>平均提高 LMSys 4.5×、ShareGPT 7.3×、SWEBench 34.4×。<strong>此对照同时改变准入与驱逐</strong>，不可严格全部归因于准入</td></tr>
+<tr><td><b>Fig. 8</b><br>驱逐消融</td><td>保持选择性准入，替换驱逐打分</td><td>Marconi vs SGLang+ (LRU)</td><td>P95 改善：LMSys 45.6%、ShareGPT 19.0%、SWEBench 219.7%；这是 FLOPs-aware eviction 更干净的证据</td></tr>
+<tr><td><b>Fig. 9</b><br>TTFT</td><td>不同缓存方案使剩余 prefill 长度改变</td><td>对 Vanilla 归一化的 P95 TTFT 分布</td><td>论文报告延迟改善；开源图生成过程是 Jamba 性能画像加缓存轨迹估算，不等于逐个系统端到端实测</td></tr>
+<tr><td><b>Fig. 10</b><br>逐请求分析</td><td>考察短请求 vs 长请求的复用权衡</td><td>SWE-Agent 一组轨迹；命中率与 FLOPs Saved</td><td>案例中 SGLang+ 16.4%、Marconi 32.7% Token Hit Rate，FLOPs Saved 增益约 90.3%；长前缀值得付出更多缓存容量</td></tr>
+<tr><td><b>Fig. 11</b><br>容量扫描</td><td>60–140GB 缓存</td><td>Marconi vs SGLang+；Token Hit Rate</td><td>中度缓存竞争时收益突出；容量极充足时替换算法难体现优势</td></tr>
+<tr><td><b>Fig. 12a</b><br>层类型比例</td><td>改变 Attention:SSM 的层数比例</td><td>Marconi、SGLang+、vLLM+；归一化命中率</td><td>SSM 占比越高，选择性 checkpoint 的价值更大；纯 Transformer 接近无差异</td></tr>
+<tr><td><b>Fig. 12b</b><br>状态大小</td><td>SSM state dim 16 → 128</td><td>Marconi vs vLLM+；归一化命中率</td><td>相对增益 5.7× → 35.4×；大状态更容易挤占缓存</td></tr>
+<tr><td><b>Fig. 13a</b><br>Session 到达率</td><td>每秒 session 数 0.5 → 2</td><td>Marconi vs SGLang+；Token Hit Rate</td><td>绝对命中率下降，但相对优势 1.4× → 1.6×</td></tr>
+<tr><td><b>Fig. 13b</b><br>会话间隔</td><td>同 session 两次请求间等待 5 → 10 秒</td><td>Marconi vs SGLang+；Token Hit Rate</td><td>复用时效变差，绝对命中率下降，FLOPs 驱逐的相对优势增大</td></tr>
+</tbody></table></div>
+<div class="callout warning"><strong>复现强度不同，不要把全部图片称为同等可复现</strong>作者的 <a href="https://github.com/ruipeterpan/marconi/blob/main/artifact_evaluation.md">Artifact 文档</a>把 Fig. 7 的 <code>token_hit_rate.py</code> 和 Fig. 8 的 <code>sglang_comparison.py</code> 列为主要复现实验。对 Fig. 10–13 的脚本，作者注明一些结果来自早期版本、或包含从日志中挑出的硬编码数字，因而未纳入严格的 artifact 评审范围。Fig. 9 虽在论文的附录脚本清单中，但 GitHub 评审说明并没有同样保证其完整复现流程。</div>
+<h3>Fig. 7 vs Fig. 8：到底谁证明了什么？</h3>
+<div class="stage"><div><b>vLLM+</b><p>每 32-token block 一份 SSM checkpoint；默认方向的 block/LRU 管理</p></div><div><b>SGLang+</b><p>更聪明的 SSM checkpoint 准入；LRU 淘汰</p></div><div><b>Marconi</b><p>同样的选择性准入；FLOPs-aware 淘汰</p></div></div>
+<p>由 <strong>vLLM+ → Marconi</strong> 的比较得到“整体系统收益”，而由 <strong>SGLang+ → Marconi</strong> 的比较更能识别驱逐打分的独立效果。Fig. 8 有 FLOPs-aware eviction 的收益，<em>不能反过来证明作者在实际 SGLang 推理引擎上加了补丁。</em></p>
+</section>
+<section id="lineage"><h2>03 / 基于 SGLang，还是基于 vLLM？</h2>
+<div class="diagram"><div class="pane"><h3>论文设计层</h3><div class="node">SGLang 风格 Radix Tree</div><div class="wire">↓ token-prefix identity</div><div class="node">Marconi Speculative Insertion</div><div class="wire">↓</div><div class="node">SSM 准入 + FLOPs-aware Eviction</div><p class="note">与 SGLang 的结构思想连续性明显；论文 §4.1 明说借用既有 KV Cache 管理数据结构，不以新树结构作为创新。</p></div>
+<div class="pane"><h3>公开实验程序层</h3><div class="node"><code>policy_exploration.py</code></div><div class="wire">↓</div><div class="slots"><div class="slot"><code>radix_cache_vllm.py</code><br>vLLM+ 模拟类</div><div class="slot"><code>radix_cache_hybrid.py</code><br>V1/V2/V3 策略类</div></div><div class="wire">↓</div><div class="node">Hit Rate / FLOPs / request history</div><p class="note">不是可见的 SGLang / vLLM 生产服务二进制；主要是自定义 Python 数据结构对 token trace 回放。</p></div></div>
+<h3>公开代码如何选择基线？</h3>
+<pre><code># policy_exploration.py 的核心抽象（便于理解的提炼示意）
+radix_tree_class = {
+    "selective": RadixCache,        # Hybrid, strategies V1/V2/V3
+    "all": RadixCacheVLLM,         # fixed-block baseline
+}[admission_strategy]
+
+# 实验入口不是 engine.generate()，而是：
+for request in all_requests:
+    radix_tree.match_prefix(request["input_tokens"])
+    radix_tree.insert(
+        token_ids=request["input_tokens"] + request["output_tokens"],
+        state_at_leaf=request["session_id"],
+        state_at_branchoff=request["session_id"],
+    )</code></pre>
+<p><strong>证据含义：</strong><code>session_id</code>充当模拟器状态标记，不是 GPU 上真实 KV/SSM tensor 的地址。源码所在：<a href="https://github.com/ruipeterpan/marconi/blob/main/policy_exploration.py">policy_exploration.py</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_vllm.py">radix_cache_vllm.py</a>、<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py">radix_cache_hybrid.py</a>。</p>
+<h3>vLLM+“改了什么”：哪些是语义，哪些有 GPU 证据？</h3>
+<ul><li><strong>论文定义：</strong>把常规 block prefix cache 扩展为可缓存 SSM 状态，选用 32-token block 的细粒度 checkpoint。</li><li><strong>公开模拟器：</strong>实现固定 block 对齐的插入、命中和 LRU 式驱逐成本模型。</li><li><strong>缺失：</strong>公开 artifact 没有给出匹配 vLLM 版本的完整 scheduler / block manager / SSM CUDA storage 补丁，也没有展示每个 32-token boundary 的真实 GPU state snapshot 拷贝逻辑。</li></ul>
+<div class="callout"><strong>更精确的判断</strong>Marconi <em>从 Radix Tree 管理思想上接近 SGLang</em>；它在论文中同时构造 <em>vLLM+、SGLang+</em> 作为扩展基线；但当前仓库<em>不能证明作者把实际 Marconi 代码建立在某个特定 SGLang commit 的后端上</em>。</div>
+</section>
+<section id="ttft"><h2>04 / Fig. 9 TTFT 结果具体如何得到？</h2>
+<p>这里存在三个容易被论文标题混在一起的层次。我们从公开 <a href="https://github.com/ruipeterpan/marconi/blob/main/plotting/ttft.py">plotting/ttft.py</a> 逆向梳理。</p>
+<div class="stage"><div><b>阶段 A：真实性能画像</b><p>用 Jamba-1.5-Mini 收集不同 Prefill 长度的 TTFT 数据，保存到 <code>ttft_AI21-Jamba-1.5-Mini.pickle</code>。</p></div><div><b>阶段 B：策略模拟</b><p>V1、V2、vLLM+ 对相同 token trace 回放，得到 <code>(hit?, input_length, cached_length)</code>。</p></div><div><b>阶段 C：延迟估算</b><p>对缓存方案调用 <code>TTFT(input_length - cached_length)</code>；对 Vanilla 调用 <code>TTFT(input_length)</code>。</p></div></div>
+<pre><code># plotting/ttft.py 原函数的关键两行
+# x[1] = input token length; x[2] = hit prefix length
+ttft_original = [get_approximate_ttft(x[1]) for x in request_history]
+ttft_scheme   = [get_approximate_ttft(x[1] - x[2]) for x in request_history]
+
+# 然后在每份 trace 上统计 P95
+return np.percentile(ttft_original, 95), np.percentile(ttft_scheme, 95)</code></pre>
+<p>程序还对原始 <code>pickle</code> 的 TTFT 曲线使用线性回归平滑，<code>get_approximate_ttft()</code> 的注释注明了早期 profiling 秒到毫秒换算的问题。真实模型 profiling <strong>确实存在</strong>；但缓存收益并未由三个修改版完整 GPU 推理服务逐请求直接测得。</p>
+<div class="callout warning"><strong>能证明 / 不能证明</strong><strong>能：</strong>在某条实际测量的长度—延迟曲线假设下，模拟复用不同 token 数量预计带来怎样的 P95 改善。<br><strong>不能：</strong>真实 checkpoint 额外 Prefill、state pool 分配、GPU kernel 状态搬移、跨请求同步、碎片及前缀恢复时序的完整开销。因此“论文报告了 TTFT”不应被误读为“公共仓库提供了完整 Hybrid 推理系统实现”。</div>
+</section>
+<section id="tree"><h2>05 / 逻辑层：一个 Radix Tree，KV 与 SSM 怎样对应？</h2>
+<p>Marconi 用<strong>同一 token 前缀路径</strong>作为 KV 与 SSM 的逻辑身份：同一个节点描述某个精确 token 区间与其结束处的 checkpoint。<strong>它并不要求所有组件都有同样的保存粒度</strong>——KV 可表示 token 片段，而 SSM 是边界处的固定大小整体状态，选择性准入使中间节点不一定保存 SSM。</p>
+<div class="diagram"><div class="pane"><div class="node">Root</div><div class="wire">↓</div><div class="node">Prefix P = [1,2,3,4]</div><div class="wire">↓ state handles</div><div class="slots"><div class="slot">KV：token [1..4] 的状态片段</div><div class="slot">SSM：prefix P 末尾的 state snapshot（若已准入）</div></div><p class="note">这是逻辑归属示意，并不表示两个状态存放在同一 HBM 连续区域。</p></div><div class="pane"><h3>为什么两个状态的复用规则不同？</h3><p><b>Attention KV</b>：可以按前缀分割、保留和重组，因此某个节点不持有 SSM state 时，其 KV 仍可能有意义。</p><p><b>SSM</b>：recurrent state 随 token 原地更新；持有 position 528 的 state 不等于拥有 position 512 的 state，不能随意回滚。</p><p>因此，<strong>真正跳过 Hybrid Prefill</strong> 必须找到所有必要状态均可在某个共同边界合法恢复的位置。</p></div></div>
+<h3>SSM 在哪些位置准入？</h3>
+<ol><li><strong>Input + Output 前缀：</strong>每个生成序列最后的 state 容易成为下一轮对话的恢复点，因此保存末端 checkpoint。</li><li><strong>Purely-input shared prefix：</strong>执行 Prefill 之前先在树里 speculative insertion，若会形成新的分叉节点，才请求在该前缀边界保存 SSM state。</li><li><strong>结果：</strong>论文称每个序列最多承认约两处 SSM state 的准入，避免在每个细小 block 都保存巨大 checkpoint。</li></ol>
+<div class="callout"><strong>精确性边界：chunk state vs two-pass prefill</strong>论文 §4.1 讲：若目标是 token 80 但模型使用 32-token chunks，可以在 token 64 物化 state，<strong>这是合法但更短的可复用前缀，不是将 64 伪装成 80</strong>。对于不能 chunk-passing 的模型，可以两遍 Prefill：第一遍到 80 保存精确 state，第二遍继续计算剩余 20；这才得到精确 80 的状态。论文没有公开真实 GPU 双遍 Prefill 的额外耗时基准。<a href="https://proceedings.mlsys.org/paper_files/paper/2025/file/7c180af017258d239bac6248d1eb26ac-Paper-Conference.pdf">论文 §4.1 / PDF 第 5–6 页</a>。</div>
+</section>
+<section id="memory"><h2>06 / 物理内存与地址：论文究竟写到了哪一步？</h2>
+<h3>6.1 状态成本公式 ≠ 物理分配器</h3>
+<p>Appendix A.1 把 FP16 下的状态内存建模为：</p>
+<pre><code>Attention 单层 KV bytes = 2 × L × D × 2 = 4LD
+SSM 单层 main state bytes = D × N × 2 = 2DN
+SSM Conv1D state bytes = in_channels × conv_kernel × 2
+
+L = 前缀 token 数；D = hidden/model dimension；N = recurrent state dimension</code></pre>
+<p>KV 占用随 <code>L</code> 增长；SSM 单个 checkpoint 的大小与 <code>L</code> 无关。论文 Table 1 为方便解释省略 Conv1D，在实际实验的状态成本统计里计入，7B 模型中约占状态的 6.1%。这些是 <strong>capacity accounting</strong> 的依据，不是 CUDAMalloc / BlockManager 的实现证据。<a href="https://proceedings.mlsys.org/paper_files/paper/2025/file/7c180af017258d239bac6248d1eb26ac-Paper-Conference.pdf">Appendix A.1 / PDF 第 15 页</a>。</p>
+<h3>6.2 驱逐中间节点：逻辑所有权变化</h3>
+<div class="diagram"><div class="pane"><h3>驱逐前</h3><div class="node">Node A [1,2]<br><span class="small">KV_A + SSM_A</span></div><div class="wire">↓ 唯一子节点</div><div class="node">Node B [3,4]<br><span class="small">KV_B + SSM_B</span></div></div><div class="pane"><h3>驱逐后</h3><div class="node">Merged Node B [1,2,3,4]<br><span class="small">KV_A + KV_B; SSM_B</span></div><div class="wire">↓</div><p><strong>释放</strong> SSM_A；<strong>吸收</strong> KV_A 到 B 的逻辑范围。</p><p class="note">“吸收”可能通过引用改挂而不是物理搬运实现，但论文和公开源码不能确认采用哪种方式。</p></div></div>
+<p>论文 §4.3 明确允许淘汰子节点数 ≤1 的中间节点（而非只淘汰叶子），以及 “intermediate node 被驱逐时 SSM states 被释放、KVs 被 child 吸收”；同时只更新实际访问节点的时间戳，不必刷新所有祖先。这说明了逻辑管理语义，却没有给出物理 KV block 重绑、释放与压缩的 CUDA 数据结构。<a href="https://proceedings.mlsys.org/paper_files/paper/2025/file/7c180af017258d239bac6248d1eb26ac-Paper-Conference.pdf">§4.3 / PDF 第 7 页</a>。</p>
+<h3>6.3 “逻辑地址”应该分成 4 种含义</h3>
+<div class="table-wrap"><table><thead><tr><th>层次</th><th>含义</th><th>Marconi 公开证据</th><th>状态</th></tr></thead><tbody>
+<tr><td>前缀身份</td><td>Token 序列、Radix Tree 路径、分叉节点</td><td><code>TreeNode.value</code>、<code>parent/children</code>、<code>get_all_token_ids()</code></td><td class="rank">明确</td></tr>
+<tr><td>缓存对象身份</td><td>KV 区间与 SSM checkpoint 归属于哪个前缀</td><td><code>HybridStates.kv_cache</code> / <code>mamba_states</code> 的结构抽象</td><td class="rank">结构明确</td></tr>
+<tr><td>逻辑 page / slot ID</td><td>KV block table ID；SSM state slot ID；两类型如何对齐或独立编号</td><td>没有完整的公开映射表或 allocator 代码</td><td class="unknown">不可确认</td></tr>
+<tr><td>GPU HBM 地址</td><td>物理 tensor、地址偏移、内存池、释放和搬移</td><td>Python 策略模拟类不执行真实 GPU 申请</td><td class="unknown">不可确认</td></tr>
+</tbody></table></div>
+<div class="callout warning"><strong>严禁混淆 <code>logical_ts</code> 与逻辑地址</strong>公开实现中的 <code>logical_ts</code> 是访问/驱逐相关的逻辑时间戳，<strong>不是</strong>逻辑 page number，也不是 KV/SSM slot id。不能由“统一 Radix Tree”推导出“统一页号”“统一物理页大小”或“同一个 allocator”。</div>
+<h3>6.4 一个合理的工程实现假说——但不是源码事实</h3>
+<pre><code>                  Unified Token-Prefix Radix Tree
+                              |
+                         Prefix Node P
+                       /              \
+               KV handle(s)         SSM checkpoint handle
+                    |                         |
+             KV block table             SSM slot table
+                    |                         |
+            Paged KV allocator         Fixed-size state pool
+                    \                         /
+                              GPU HBM
+</code></pre>
+<p>这是根据 KV 区间可分页、SSM checkpoint 固定尺寸这两个性质推导的<strong>实现建议/假说</strong>。现有资料不能证明 Marconi 真有两个 allocator，也不能证明两种状态共享同一地址索引。若作者真实系统采用同一内存池、slab 或其他设计，以上图示不适用。</p>
+</section>
+<section id="simulation"><h2>07 / 从开源代码还原可复现路径</h2>
+<div class="stage"><div><b>1. 下载并处理 trace</b><p><code>LMSys / ShareGPT / SWEBench</code>，统一 token IDs、请求时间信息。</p></div><div><b>2. 回放三类缓存策略</b><p><code>policy_exploration.py</code> 构造缓存树，执行 <code>match_prefix → insert → evict</code>。</p></div><div><b>3. 统计并绘图</b><p><code>get_cache_stats()</code>、<code>token_hit_rate.py</code>、<code>sglang_comparison.py</code> 与 TTFT 估算脚本。</p></div></div>
+<pre><code>git clone https://github.com/ruipeterpan/marconi.git
+cd marconi
+# 准备环境和请求 traces，详见 artifact_evaluation.md
+bash run_all_experiments.sh
+# 主结论的图：plotting/token_hit_rate.py / sglang_comparison.py
+</code></pre>
+<p>官方 Artifact 对实验版本的称呼：V1 = SGLang+；V2 = Marconi；V3 = offline-optimal static-alpha oracle（论文主要图未采用）。这同样说明实验核心是参数化的 eviction policies，而非部署多套真实 GPU Serving 进程。</p>
+<h3>源码地图：研究时应优先看这些文件</h3><div class="table-wrap"><table><thead><tr><th>文件</th><th>需要核查的行为</th><th>由此能回答什么</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/ruipeterpan/marconi/blob/main/policy_exploration.py">policy_exploration.py</a></td><td>输入 trace、模型层数、策略创建、<code>match_prefix/insert</code></td><td>实验在不在 GPU 上执行模型？</td></tr>
+<tr><td><a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py">radix_cache_hybrid.py</a></td><td>Node/HybridStates、selective admission、候选选择、节点吸收、state cost</td><td>逻辑归属和 eviction 行为</td></tr>
+<tr><td><a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_vllm.py">radix_cache_vllm.py</a></td><td>Block size、vLLM+ 风格的块逻辑和 LRU</td><td>vLLM+ 的策略语义</td></tr>
+<tr><td><a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py">utils.py</a></td><td>Attention/MLP/SSM FLOPs、KV/SSM byte formulas</td><td>模拟容量为何按字节核算</td></tr>
+<tr><td><a href="https://github.com/ruipeterpan/marconi/blob/main/config_tuner.py">config_tuner.py</a></td><td>多个 α 的独立 trace replay 与评分</td><td>策略如何调参</td></tr>
+<tr><td><a href="https://github.com/ruipeterpan/marconi/blob/main/plotting/ttft.py">plotting/ttft.py</a></td><td>Jamba pickle、长度到 TTFT 的映射</td><td>Fig. 9 的“端到端”测量边界</td></tr>
+<tr><td><a href="https://github.com/ruipeterpan/marconi/blob/main/artifact_evaluation.md">artifact_evaluation.md</a></td><td>允许复现的图、实验入口、已知限制</td><td>哪些结果经官方 artifact 明确保证</td></tr>
+</tbody></table></div>
+</section>
+<section id="evidence"><h2>08 / 证据分级：不把推断当事实</h2>
+<div class="table-wrap"><table><thead><tr><th>断言</th><th>等级</th><th>依据 / 注意</th></tr></thead><tbody>
+<tr><td>Marconi 使用统一 token-prefix Radix Tree 管理 KV/SSM 的逻辑身份</td><td class="rank">论文 + 逻辑源码支持</td><td>§4.1、RadixCache / HybridStates</td></tr>
+<tr><td>SGLang+ = Marconi 的 admission + LRU；Marconi 引入 FLOPs-aware eviction</td><td class="rank">直接支持</td><td>§5.1、artifact V1/V2</td></tr>
+<tr><td>vLLM+ 每 32-token block 密集存 SSM checkpoint</td><td class="rank">论文直接支持</td><td>§5.1；公开模拟器实现该语义</td></tr>
+<tr><td>主策略评估是 trace-driven、state marker 并非 GPU tensor</td><td class="rank">源码直接支持</td><td>policy_exploration.py</td></tr>
+<tr><td>Fig. 9 用缓存长度映射 Jamba measured-profile 估算 TTFT</td><td class="rank">源码直接支持</td><td>plotting/ttft.py</td></tr>
+<tr><td>Marconi 的原型直接修改了 SGLang 的某个完整引擎版本</td><td class="unknown">未证实</td><td>公开仓库无对应完整 fork / commit / 服务启动脚本</td></tr>
+<tr><td>KV 采用可分页内存组织，SSM checkpoint 为固定大小状态</td><td class="rank">设计原则明确</td><td>论文背景、§4、Appendix A.1；具体物理方案未公开</td></tr>
+<tr><td>作者实际采用独立 KV block pool 和 SSM state pool</td><td class="unknown">合理猜想，不可确证</td><td>缺完整 allocator</td></tr>
+<tr><td>KV 和 SSM 共用逻辑页号、共享一套物理页大小</td><td class="bad">没有证据</td><td>统一前缀索引不意味着统一页表/页号</td></tr>
+<tr><td>GPU KV 通过重新引用无拷贝吸收到子节点</td><td class="unknown">设计推测</td><td>论文只承诺逻辑“absorb”，没有证实实现方式</td></tr>
+</tbody></table></div>
+</section>
+<section id="research"><h2>09 / 对 Hybrid Prefix Management 研究的意义</h2>
+<h3>Marconi 已经回答的问题</h3><ul><li>哪些共享前缀值得保存 SSM checkpoint？（针对输入分叉 / 对话末尾选择性准入）</li><li>哪些缓存项应该被驱逐？（recency 与 FLOPs saved/byte 的权衡）</li><li>统一前缀树里如何处理不同类型状态的复用语义和中间节点删除？（逻辑层管理）</li></ul>
+<h3>Marconi 尚未通过公开代码明确证明的问题</h3><ol><li><strong>物理布局：</strong>KV pages、SSM slots、Conv1D state 是否独立分配？哪个地方保存 cross-type handle？</li><li><strong>逻辑粒度：</strong>各层各类 state 的 checkpoint boundary 是否必须统一，或可存在独立有效范围？</li><li><strong>精确恢复：</strong>只有部分状态命中时，如何精确重算其余状态而不丢掉已命中的 KV 收益？</li><li><strong>运行时成本：</strong>两遍 Prefill、checkpoint 复制、内存碎片、GPU 同步及 allocator 争用带来多少真实 TTFT？</li></ol>
+<div class="callout good"><strong>与你的 Qwen3.5-9B 实验的直接连接</strong>你观察到的 Mooncake 512-token 共享粒度与 vLLM align 的 528-token joint cache geometry 错位，是<strong>能够在真实引擎中复现实测</strong>的状态边界与分配粒度问题。它比从 Marconi 逻辑树代码猜 GPU 页表更适合作为下一步系统问题的实证入口。独立实验页面：<a href="./qwen3.5-9b-extension-experiments.html">Qwen3.5-9B Hybrid Prefix Geometry</a>。</div>
+<h3>下一步优先验证的四个问题</h3><ol><li>在最新 vLLM 中，<code>KVCacheSpec</code> / <code>MambaSpec</code> 与 block pool 的索引如何关联？是否所有层类型共享 block index？</li><li>一个不对齐的 512-token 精确共享前缀，哪些 Attention KV 在内部实际上可命中、却因为 GDN checkpoint 不可用而整体无法复用？</li><li>做一个两种状态独立驻留的最小原型，是否能实现精确恢复并缩短 TTFT？额外重算成本与 HBM 节省如何量化？</li><li>改变 batch、state dtype、TP、backend 后，528 的 block geometry 如何变化？结果是否稳定？</li></ol>
+</section>
+<section id="refs"><h2>10 / 论文、代码与复现材料</h2>
+<ol><li><a href="https://proceedings.mlsys.org/paper_files/paper/2025/file/7c180af017258d239bac6248d1eb26ac-Paper-Conference.pdf">Marconi: Prefix Caching for the Era of Hybrid LLMs — MLSys 2025 正式论文（PDF）</a>，重点 §4.1、§4.2、§4.3、§5.1–5.4、Appendix A.1。</li><li><a href="https://github.com/ruipeterpan/marconi">ruipeterpan/marconi — 官方 artifact</a>；<a href="https://github.com/ruipeterpan/marconi/blob/main/artifact_evaluation.md">官方复现说明</a>。</li><li><a href="https://github.com/ruipeterpan/marconi/blob/main/policy_exploration.py">policy_exploration.py</a>；<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_hybrid.py">radix_cache_hybrid.py</a>；<a href="https://github.com/ruipeterpan/marconi/blob/main/radix_cache_vllm.py">radix_cache_vllm.py</a>。</li><li><a href="https://github.com/ruipeterpan/marconi/blob/main/plotting/ttft.py">plotting/ttft.py</a>（查验 Fig. 9 的测量链）；<a href="https://github.com/ruipeterpan/marconi/blob/main/utils.py">utils.py</a>（状态内存与 FLOPs）。</li><li><a href="https://zenodo.org/records/14970139">Zenodo archived artifact 10.5281/zenodo.14970139</a>。</li></ol>
+<details><summary>阅读说明：哪些代码片段是直接引用，哪些是讲解性提炼？</summary><div><p>本文对程序结构的示意代码会特别标注“提炼示意”；这些代码用来说明控制流和数据关系，不应当替代直接阅读链接到的原文件。对论文实验数字采用原作者报告的口径，未重新运行 trace；对物理分配器不存在“直接证实”之处标记为“未知”，避免把可能的工程实现误作作者实际方案。</p></div></details>
+</section>
+<div class="foot">Marconi 实验与内存管理证据审计 · 2026-10-15 · 本页为独立研究笔记，非原论文作者的官方文档。<br>Related: <a href="./index.html">Marconi eviction / FLOPs learning notes</a> · <a href="./qwen3.5-9b-extension-experiments.html">Qwen3.5-9B extension experiments</a></div>
+</main></div></body></html>
