@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen3.5 Hybrid Prefix Geometry Extension</title>
+  <style>
+    :root { color-scheme: dark; --bg:#10151d; --panel:#171f2b; --line:#2b394b; --text:#e7edf5; --muted:#a7b4c4; --accent:#7dd3fc; --good:#86efac; --warn:#fcd34d; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif; }
+    main { max-width:1060px; margin:0 auto; padding:48px 24px 72px; }
+    h1 { font-size:34px; line-height:1.2; margin:0 0 10px; } h2 { margin-top:38px; color:var(--accent); }
+    h3 { margin-bottom:6px; } p { color:var(--muted); } a { color:var(--accent); }
+    .eyebrow { color:var(--warn); font-size:13px; letter-spacing:.08em; text-transform:uppercase; }
+    .callout { border-left:3px solid var(--accent); background:var(--panel); padding:14px 18px; margin:18px 0; }
+    .warn { border-left-color:var(--warn); } .good { border-left-color:var(--good); }
+    table { width:100%; border-collapse:collapse; margin:16px 0 22px; background:var(--panel); }
+    th, td { text-align:left; vertical-align:top; padding:11px 12px; border-bottom:1px solid var(--line); }
+    th { color:var(--accent); font-weight:600; } code, pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+    code { color:#c4b5fd; } pre { overflow:auto; background:#0b1017; border:1px solid var(--line); padding:14px; }
+    .small { font-size:13px; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Extension experiment · 2026-10-11</div>
+  <h1>Qwen3.5-9B 的 hybrid prefix geometry</h1>
+  <p>目标是验证 Mooncake 的 512-token 共享粒度与 vLLM 0.30.0 hybrid align 的 528-token joint cache geometry 是否造成可观测的 prefix-reuse 浪费。</p>
+
+  <h2>1. Qwen3.5-9B 的架构</h2>
+  <p>本实验使用的是 Qwen3.5-9B 的文本 backbone，而不是 Mamba 或 KDA 模型。官方模型卡和本地 <code>config.json</code> 都给出 32 个 decoder layers，结构为 8 组“3 个 Gated DeltaNet linear-attention 层 + 1 个 Gated Attention 层”，即 24 个 GDN 层和 8 个 full-attention 层。</p>
+  <pre>第 0 组:  L0 GDN → L1 GDN → L2 GDN → L3 Gated Attention
+第 1 组:  L4 GDN → L5 GDN → L6 GDN → L7 Gated Attention
+...
+第 7 组:  L28 GDN → L29 GDN → L30 GDN → L31 Gated Attention</pre>
+  <table>
+    <tr><th>部分</th><th>本实验模型配置</th><th>对 prefix reuse 的影响</th></tr>
+    <tr><td>Gated DeltaNet</td><td>24 层；16 个 QK heads、32 个 V heads；head dim 128；short convolution kernel dim 4</td><td>维护按序更新的 recurrent/linear-attention state，不能像 KV 一样任意按 token 回滚</td></tr>
+    <tr><td>Gated Attention</td><td>8 层；16 个 Q heads、4 个 KV heads；head dim 256；RoPE dimension 64</td><td>产生 token-addressable full-attention KV cache</td></tr>
+    <tr><td>模型总层数</td><td>32；每 4 层包含 1 个 full-attention 层</td><td>一个可执行的 joint resume 必须同时满足两类状态的边界条件</td></tr>
+  </table>
+  <p class="small">vLLM 代码把 GDN 的状态接入 <code>MambaSpec</code>、<code>mamba_cache_mode</code> 等通用 SSM cache 接口。这是实现抽象，不表示 Qwen3.5 使用 Mamba。</p>
+  <p>参考：<a href="https://huggingface.co/Qwen/Qwen3.5-9B">Qwen3.5-9B model card</a>、<a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/model_executor/models/qwen3_5.py">vLLM Qwen3.5 implementation</a>。</p>
+
+  <h2>2. vLLM hybrid align 做了什么</h2>
+  <p>vLLM 需要让同一套 cache block 同时容纳 full-attention page 和 GDN state page。启动时先计算单 token 的 attention page size，再计算 GDN state page size，并把 attention block size 调整到足以覆盖较大的 GDN page，同时满足 attention backend 的 kernel alignment。</p>
+  <pre>attention block size = 528 tokens
+mamba_block_size (align mode) = 528 tokens
+kv cache groups = [528, 528, 528, 528]
+kv lcm block size = 528
+mamba page padding = 0.76%</pre>
+  <p>在 <code>mamba_cache_mode=align</code> 下，vLLM 只在 scheduler step 的末尾、且位置落在 block grid 上时保存 GDN state。启动日志明确报告“Setting attention block size to 528 tokens”，随后将 GDN page padding 到相同大小。</p>
+  <p>因此 528 是 cache allocation 和状态闭包的几何边界，不是 Qwen 的训练 chunk，也不是 Mooncake trace 的原始 token 分块。</p>
+
+  <h3>2.1 528 的具体推导：先换算成字节</h3>
+  <p>这个数字不是拍脑袋设置的，而是由 Qwen 的张量形状、cache dtype 和 kernel 对齐共同决定。下面按本次 vLLM 0.30.0、单卡 TP=1、模型 BF16、默认 Mamba cache dtype 的实际配置计算。</p>
+  <table>
+    <tr><th>对象</th><th>形状/参数</th><th>字节数</th></tr>
+    <tr><td>一个 full-attention token 的 KV page</td><td>4 KV heads × 256 head dim × 2(K/V) × 2 B(BF16)</td><td><code>4 × 256 × 2 × 2 = 4,096 B</code></td></tr>
+    <tr><td>GDN short-conv state</td><td><code>(conv_kernel_dim - 1, conv_dim) = (3, 16×128×2 + 32×128) = (3, 8,192)</code>，BF16</td><td><code>3 × 8,192 × 2 = 49,152 B</code></td></tr>
+    <tr><td>GDN temporal/recurrent state</td><td><code>(num_v_heads, value_head_dim, key_head_dim) = (32,128,128)</code>，配置中的 <code>mamba_ssm_dtype=float32</code></td><td><code>32 × 128 × 128 × 4 = 2,097,152 B</code></td></tr>
+    <tr><td>一个 GDN state page</td><td>short-conv + temporal state</td><td><code>49,152 + 2,097,152 = 2,146,304 B</code></td></tr>
+  </table>
+  <p>因此，一个 GDN state page 等价于：</p>
+  <pre>2,146,304 B ÷ 4,096 B/token = 524 attention-token pages</pre>
+  <p>本次启动日志显示使用 FlashAttention v2；该 attention backend 的 block size 按 16 token 对齐，同时 vLLM 对 <code>mamba_block_size</code> 还有 8-token 的约束。16 已经满足 8 的约束，因此实际计算按 16 token 向上取整：</p>
+  <pre>ceil_to_multiple(524, 16)
+= 16 × ceil(524 / 16)
+= 16 × 33
+= 528 tokens</pre>
+  <div class="callout good"><strong>交叉校验：</strong>528 个 attention token 的 page 是 <code>528 × 4,096 = 2,162,688 B</code>，比原始 GDN page 多 <code>16,384 B</code>；<code>16,384 / 2,146,304 = 0.763%</code>，与 vLLM 启动日志报告的 <code>Padding mamba page size by 0.76%</code> 一致。</div>
+  <p class="small">这里的“524 token”等价物只是为了说明 page-size 换算，不能理解为系统允许使用 524-token block。最终必须向上取整到本次 FlashAttention backend 允许的 16-token 粒度（同时满足 Mamba 的 8-token 约束），所以实际 joint block 是 528。</p>
+
+  <h3>2.2 checkpoint 到底放在哪里</h3>
+  <p>checkpoint 不是只放在第一个 GDN 层，也不是只保存一个向量。对每个需要 recurrent state 的 GDN cache group，vLLM 保存该组的两部分状态：short-convolution 的最近历史窗口，以及 Gated DeltaNet 的 temporal state 矩阵。Qwen3.5 的 temporal state 形状是 <code>[32, 128, 128]</code>，它随 token 顺序递推更新。</p>
+  <p>在本次 <code>align</code> 模式下，逻辑边界是：</p>
+  <pre>token 0 ... 527   → checkpoint at position 528
+token 0 ... 1055  → checkpoint at position 1056
+token 0 ... 1583  → checkpoint at position 1584
+...</pre>
+  <p>更精确地说，528、1056、1584 等是可物化的 block boundary；实际写入还要满足 scheduler step 在该边界结束以及 vLLM 的 checkpoint-validity 条件。vLLM 源码把这个状态放入 <code>MambaSpec</code> 对应的 state pool，并用与 attention block 相同的 block index 管理；启动日志中的 <code>kv cache groups = [528, 528, 528, 528]</code> 表示本次运行的四个逻辑 cache group 采用同一页粒度，而不是说模型只有四层。</p>
+  <p>如果请求在 512 token 处结束，系统不会自动拥有“512 处的 GDN checkpoint”。当前默认的 <code>align</code> 策略也不会为了每个任意共享前缀临时增加一个 512 处的 state snapshot；这正是 Mooncake 的 512-token sharing geometry 与 vLLM 的 528-token joint geometry 发生错位的根源。</p>
+
+  <h2>3. Trace 与计算口径</h2>
+  <p>数据来自 <a href="https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release/traces">Mooncake FAST25 conversation trace</a>。原始 trace 只有匿名 hash IDs、输入长度、输出长度和 arrival time；本地 replay 用稳定的本地 token 扩展保持 hash-prefix 共享结构，不把扩展 token 当作真实语义 prompt。</p>
+  <table>
+    <tr><th>项目</th><th>值</th></tr>
+    <tr><td>subset</td><td>原始顺序前 50 条，输入长度不超过 16K</td></tr>
+    <tr><td>总输入 token</td><td>342,407</td></tr>
+    <tr><td>trace chunk geometry</td><td>512 token</td></tr>
+    <tr><td>有历史共享 prefix 的请求</td><td>49 / 50</td></tr>
+    <tr><td>离线潜在共享量</td><td>49 × 512 = 25,088 token</td></tr>
+  </table>
+  <p>这里的 25,088 是基于 hash-prefix 的 offline upper bound：它表示如果只按 trace 的 512-token 共享关系观察，最多有这些 token 可以成为复用候选。它还没有扣除 cache capacity、eviction、状态恢复和调度开销。</p>
+  <div class="callout warn"><strong>关键算例：</strong>对一个共享长度 <code>L</code> 的请求，align 模式下 direct-resume 能使用的最大完整 joint prefix 至多是 <code>floor(L / 528) × 528</code>（还要满足 cache 中确实存在对应 checkpoint）。因此 <code>L=512</code> 时结果是 <code>floor(512/528)×528=0</code>，不是“复用 512、浪费 16”；<code>L=1056</code> 时才可能复用完整的两个 528-token blocks。</div>
+
+  <h2>4. 引擎实测</h2>
+  <table>
+    <tr><th>引擎</th><th>配置</th><th>观察到的复用</th><th>延迟</th></tr>
+    <tr><td>vLLM 0.30.0</td><td><code>--enable-prefix-caching --mamba-cache-mode align</code></td><td>50/50 成功；<code>prefix_cache_queries_total=342407</code>；<code>prefix_cache_hits_total=0</code></td><td>TTFT p50 556.98 ms；p99 1329.73 ms</td></tr>
+    <tr><td>SGLang 0.5.20</td><td><code>--mamba-radix-cache-strategy extra_buffer</code></td><td>48 个非零 cache events；device cached tokens = 24,576 = 48 × 512</td><td>TTFT p50 439.90 ms；p99 1324.20 ms</td></tr>
+  </table>
+  <div class="callout good"><strong>验证结果：</strong>在这组 50-request replay 中，vLLM align 没有形成 prefix-cache hit；SGLang 实际复用了 24,576 token，约为 offline potential 的 97.96%。</div>
+  <p>为什么不是“每个 512-token chunk 只浪费 16 token”？因为当前 subset 的共享长度全部是 512，而 vLLM 的最小 joint page 是 528。每个候选都没有达到一个完整的 joint page，因此每个候选的 direct reusable amount 是 0；49 个候选合计就是 25,088 token 的差距。那 16 个 token 不是唯一损失：缺失的是在 token 512 处建立一套可恢复的 GDN state，因而整个 512-token 联合前缀都不能走 direct resume。</p>
+
+  <h2>5. 受控边界验证</h2>
+  <p>为了排除仅由 trace 统计造成的解释，已有受控实验对 A/B/C 三类请求做了长度扫描：</p>
+  <table>
+    <tr><th>请求</th><th>含义</th></tr>
+    <tr><td>A cold</td><td>第一次出现的 prefix + suffix，建立 cache</td></tr>
+    <tr><td>B shared prefix + different suffix</td><td>与 A 共享指定 prefix，但 suffix 不同，测试分支请求能否在该边界恢复</td></tr>
+    <tr><td>C exact repeat</td><td>完整重复 B，测试已经物化的完整路径能否直接复用</td></tr>
+  </table>
+  <h3>5.1 为什么 suffix 一变，512 就不能“借用”别人的 checkpoint</h3>
+  <p>假设请求 A 和 B 的前 512 token 完全相同，但第 513 个 token 开始不同。A 在 528 处的 checkpoint 是“读完 A 的 528 个 token 后的状态”，其中已经混入 A 的 513–528；它不是“前 512 token 的状态”。因此 B 不能拿 A 的 528 checkpoint 作为自己的起点，否则 B 的 recurrent state 已经包含了错误 suffix。</p>
+  <pre>A: [shared 1 ... shared 512][A513 ... A528] → state_A@528
+B: [shared 1 ... shared 512][B513 ... B528] → state_B@528
+
+state_A@528 ≠ state_B@528
+而系统没有 state@512，所以 B 无法 exact direct-resume。</pre>
+  <p>full-attention KV 可以按 token/block 做局部匹配，但 GDN state 是顺序更新的闭包对象；只有在共享前缀本身到达一个已保存的 joint boundary 时，两个组件才能一起恢复。这就是“局部 KV 命中不等于联合可恢复”的具体实例。</p>
+  <p>vLLM 的 528/1056/2112/4224/8448 对齐长度中，B 和 C 的 wall time 都约为 67–77 ms；在 4608/5120/6144/7168/8192 等非 528 对齐长度中，B 接近 cold A，而 C 仍约为 60–72 ms。由于 vLLM 0.30.0 的 response 没有稳定的 per-request cached-token 字段，这部分用服务端 aggregate counter 和 wall time 解释。</p>
+  <p>SGLang 的 controlled sweep 也显示 exact repeat 能在较短长度命中，而不同 suffix 的可观测 cached_tokens 具有离散边界；但在 Mooncake replay 中，extra_buffer 又能复用大部分 512-token chunks。两者不矛盾：受控实验暴露的是不同 suffix 所需的 recurrent-state recovery boundary，真实 trace 还叠加了 cache 生命周期和 scheduler 行为。</p>
+
+  <h2>6. 当前结论边界</h2>
+  <div class="callout warn"><strong>可以确认：</strong>在固定的 Qwen3.5-9B、vLLM 0.30.0、Mooncake first-50 subset 和 align 配置下，512-token shared chunk 与 528-token hybrid page geometry 不匹配，25,088 个 offline candidate tokens 没有形成 vLLM direct prefix hit。</div>
+  <p><strong>还不能确认：</strong>528 一定是所有 Qwen3.5/vLLM 版本的固定值；所有真实 workload 都会损失同样比例；SGLang 的机制等价于完全解决了 hybrid recovery；或者 wall-time 差异全部来自 cache hit。</p>
+  <p>实验限制包括：Mooncake 是 hash-only trace；subset 只有 50 条请求；两个引擎使用各自原生 cache strategy；运行时缺少匹配的 FlashInfer cubin，实验绕过了版本检查。这些限制已记录在 <a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/platforms/interface.py">vLLM alignment code</a> 和研究目录的日志/结果中。</p>
+
+  <h2>Sources and artifacts</h2>
+  <ul>
+    <li><a href="https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release/traces">Mooncake FAST25 traces</a></li>
+    <li><a href="https://github.com/QwenLM/Qwen3.5">Qwen3.5 official repository</a></li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/platforms/interface.py">vLLM 0.30.0 hybrid alignment implementation</a></li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/model_executor/layers/mamba/mamba_utils.py">vLLM GDN state-shape and dtype calculation</a></li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/v1/kv_cache_interface.py">vLLM MambaSpec page size and checkpoint helpers</a></li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/config/cache.py">vLLM cache-mode definitions for <code>align</code> and <code>all</code></a></li>
+    <li><a href="/home/wzq/hybrid-prefix-study/results/stage1_summary.json">Stage-1 machine-readable summary</a></li>
+    <li><a href="/home/wzq/hybrid-prefix-study/results/stage2_summary.json">Stage-2 controlled sweep summary</a></li>
+  </ul>
+  <p class="small">本页的 528 推导对应固定实验环境：vLLM 0.30.0、Qwen3.5-9B、TP=1、模型 BF16、默认 cache dtype；更换 tensor parallel、KV quantization、backend 或模型配置后，需要重新计算 page size，不能直接套用 528。</p>
+</main>
+</body>
+</html>
