@@ -15,3 +15,7 @@ To publish as a website, enable GitHub Pages with **Deploy from a branch**, bran
 ## Marconi: Experiments and Implementation Evidence
 
 [Marconi experiments, SGLang+/vLLM+ baselines, TTFT methodology, and KV/SSM memory management (source audit)](./marconi-experiments-implementation-memory-analysis.html)
+
+## Jenga: Memory and Prefix Cache Guide
+
+[Jenga: memory layout, prefix reuse, two-level allocation, and eviction (interactive guide)](./jenga-memory-prefix-cache-guide.html)
