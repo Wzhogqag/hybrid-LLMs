@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Trace 的六种重放方式｜两轮对话看懂</title>
+<style>
+:root { color-scheme: light; --ink:#18283b; --muted:#627184; --line:#dce5ef; --paper:#ffffff; --bg:#f3f6fb; --blue:#2169ae; --blue-light:#e4f0fc; --green:#167552; --green-light:#e3f5ed; --orange:#9f6008; --orange-light:#fff0d5; --violet:#7042a4; --violet-light:#f0eafa; --shadow:0 12px 32px rgba(29,51,86,.07); }
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.65} main{max-width:1100px;margin:0 auto;padding:34px 22px 60px} header{padding:36px 38px;background:linear-gradient(126deg,#162b46,#244d77);color:#fff;border-radius:20px;box-shadow:var(--shadow)} .kicker{font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:#b7d6f4;font-weight:800} h1{font-size:clamp(25px,3.5vw,37px);line-height:1.25;margin:10px 0 13px;letter-spacing:-.025em}header p{color:#d8e4f2;margin:0;max-width:810px;font-size:15px} h2{font-size:20px;letter-spacing:-.02em;margin:0 0 12px} h3{font-size:17px;line-height:1.45;margin:0} p{margin:8px 0} small,.small{font-size:12px;color:var(--muted)} .section{margin-top:30px}.panel{border:1px solid var(--line);border-radius:16px;padding:23px 25px;background:#fff;box-shadow:var(--shadow)} .legend{display:flex;gap:9px;flex-wrap:wrap;margin:12px 0 17px}.token{display:inline-block;font-size:13px;font-weight:700;padding:4px 10px;border-radius:7px;white-space:nowrap}.P,.Xp{background:var(--blue-light);color:#1e5f9a}.A{background:var(--green-light);color:#126643}.B{background:var(--orange-light);color:#875100}.T{background:var(--violet-light);color:#603a8b}.inlineflow{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:9px 0}.arrow{color:#8493a2;font-weight:800}.baseline{display:grid;grid-template-columns:minmax(210px,1fr) minmax(210px,1fr);gap:14px}.scenario{background:#f8faff;border:1px solid #e4eaf1;border-radius:12px;padding:13px 15px}.scenario .desc{font-size:12px;color:#617084;margin-bottom:7px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}.method{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:21px;display:flex;flex-direction:column;gap:10px}.num{display:inline-grid;place-items:center;width:27px;height:27px;background:#e7edf6;color:#365a84;border-radius:8px;font-size:13px;font-weight:800;flex:none}.head{display:flex;align-items:center;gap:9px}.source{font-size:12px;color:var(--muted);margin:-4px 0 0 36px}.core{font-size:13px;color:#354b61;margin:0}.turn{background:#f7f9fc;border-radius:10px;padding:11px 13px}.turn-label{font-size:11px;color:#697990;font-weight:800;letter-spacing:.05em}.flow{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:5px 0 0}.verdict{font-size:13px;border-top:1px dashed #dce5ef;padding-top:10px;margin-top:auto;color:#3c4a5b}.verdict strong{color:#26364b}.tag{font-size:11px;font-weight:700;background:#f0f3f7;border-radius:6px;padding:3px 7px;white-space:nowrap}.good{background:#e4f5ed;color:#13724c}.limited{background:#fff1dd;color:#976000}.hard{background:#ece9f7;color:#6b4c9f}.tablewrap{overflow-x:auto}table{border-collapse:collapse;min-width:760px;width:100%;font-size:13px}th{text-align:left;padding:12px 13px;background:#edf3fa;color:#35485e} td{padding:11px 13px;border-top:1px solid #e7edf4;vertical-align:top}tbody tr:nth-child(even){background:#f9fbfe}.recommend{display:grid;grid-template-columns:1fr 1fr;gap:15px}.recommend>div{background:#fff;border:1px solid var(--line);border-radius:13px;padding:18px}.recommend strong{display:block;margin-bottom:7px}.callout{border-left:4px solid #3b7fbc;padding:12px 16px;background:#eaf2fb;border-radius:0 10px 10px 0;font-size:14px;margin-top:16px}.foot{margin-top:26px;font-size:12px;color:#667689}.links{display:flex;flex-wrap:wrap;gap:8px 18px}a{color:#2c6db0;text-underline-offset:3px}.foot a{color:#4e7091}
+@media(max-width:780px){main{padding:15px 13px 40px}header{padding:25px 22px}.panel{padding:18px}.grid,.baseline,.recommend{grid-template-columns:1fr}.method{padding:17px}.section{margin-top:24px}}@media print{body{background:#fff}main{padding:0;max-width:none}header,.panel,.method{box-shadow:none}.method{break-inside:avoid}a{text-decoration:none}.section{break-inside:avoid}header{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="kicker">Agentic LLM Serving · Trace Replay</div>
+<h1>两轮对话，看懂 6 种 Agent Trace 重放方式</h1>
+<p>统一回答：Qwen3.5 第一轮生成的内容与原始 Trace 不同，第二轮该用谁的输出？上一轮 Decode KV 还能不能复用？</p>
+</header>
+<section class="section panel">
+<h2>先约定同一个例子</h2>
+<p style="font-size:14px;margin:0">原始 Trace 由别的模型采集。现在用 <b>Qwen3.5</b> 来跑；它生成 <b>B</b>，而原始 Trace 记录的回答是 <b>A</b>，两者不一样。</p>
+<div class="legend">
+<span class="token P">P：原始输入（1,000 tokens）</span><span class="token A">A：原始回答（100）</span><span class="token B">B：Qwen 新回答（100）</span><span class="token T">T：原始工具结果（200）</span>
+</div>
+<div class="baseline">
+<div class="scenario"><div class="desc">原始 Trace · 第 1 轮</div><div class="inlineflow"><span class="token P">P</span><span class="arrow">→</span><span class="token A">A</span><span class="arrow">→</span><span class="token T">T</span></div></div>
+<div class="scenario"><div class="desc">原始 Trace · 第 2 轮输入</div><div class="inlineflow"><span class="token P">P</span><span class="token A">A</span><span class="token T">T</span><span class="small">≈ 1,300 tokens</span></div></div>
+</div>
+<p class="small" style="margin:12px 0 0">图中忽略 Chat Template 和最后一个 Token 的处理细节；“可复用”只表示 Token 前缀一致、具备复用资格，还需满足缓存驻留、Block 对齐及 Recurrent Checkpoint 条件。</p>
+</section>
+<section class="section">
+<h2>六种方案：只看两轮发生了什么</h2>
+<div class="grid">
+<article class="method"><div class="head"><span class="num">01</span><h3>原始 Prompt 固定重放</h3></div><p class="source">你的 LMCache Trace 实验</p><p class="core">Qwen 输出什么都不影响下一轮，严格读取原始 Trace。</p>
+<div class="turn"><div class="turn-label">第 1 轮</div><div class="flow"><span class="token P">P</span><span class="arrow">→ Qwen 生成 →</span><span class="token B">B</span></div></div>
+<div class="turn"><div class="turn-label">第 2 轮输入</div><div class="flow"><span class="token P">P</span><span class="token A">A</span><span class="token T">T</span></div></div>
+<div class="verdict"><span class="tag limited">B 的 Decode KV 不能复用</span><br><b>保留：</b>原始 Prompt 与前缀共享关系。<br><b>代价：</b>可能产生永远不会被再用的 B 尾部 KV。</div>
+</article>
+<article class="method"><div class="head"><span class="num">02</span><h3>真实输出反馈重放</h3></div><p class="source">vLLM / SGLang Multi-turn Benchmark</p><p class="core">把原始回答 A 替换成 Qwen 实际生成的 B，工具结果仍用 T。</p>
+<div class="turn"><div class="turn-label">第 1 轮</div><div class="flow"><span class="token P">P</span><span class="arrow">→ Qwen 生成 →</span><span class="token B">B</span></div></div>
+<div class="turn"><div class="turn-label">第 2 轮输入</div><div class="flow"><span class="token P">P</span><span class="token B">B</span><span class="token T">T</span></div></div>
+<div class="verdict"><span class="tag good">B 的 Decode KV 有机会复用</span><br><b>保留：</b>会话轮次、工具消息结构。<br><b>代价：</b>实际 Prompt 已不同于原始 Trace。</div>
+</article>
+<article class="method"><div class="head"><span class="num">03</span><h3>真实 Agent 闭环</h3></div><p class="source">OpenHands / ThunderAgent 类真实执行</p><p class="core">Qwen 回答后，真的调用工具；工具结果也可能变成 T′。</p>
+<div class="turn"><div class="turn-label">第 1 轮</div><div class="flow"><span class="token P">P</span><span class="arrow">→</span><span class="token B">B</span><span class="arrow">→ 执行工具 →</span><span class="token T">T′</span></div></div>
+<div class="turn"><div class="turn-label">第 2 轮输入</div><div class="flow"><span class="token P">P</span><span class="token B">B</span><span class="token T">T′</span></div></div>
+<div class="verdict"><span class="tag good">KV 有机会自然复用</span><br><b>优点：</b>最接近真实 Agent 运行。<br><b>代价：</b>工具结果、轮数、请求长度都可能改变。</div>
+</article>
+<article class="method"><div class="head"><span class="num">04</span><h3>合成消息 + 输出反馈</h3></div><p class="source">NVIDIA TensorRT-LLM Trace Replay</p><p class="core">只按原始消息长度合成 P′、T′；Qwen 仍真实生成 B。</p>
+<div class="turn"><div class="turn-label">第 1 轮</div><div class="flow"><span class="token Xp">P′（合成）</span><span class="arrow">→ Qwen →</span><span class="token B">B</span></div></div>
+<div class="turn"><div class="turn-label">第 2 轮输入</div><div class="flow"><span class="token Xp">P′</span><span class="token B">B</span><span class="token T">T′（合成）</span></div></div>
+<div class="verdict"><span class="tag good">B 的 Decode KV 有机会复用</span><br><b>保留：</b>消息长度、角色、时序和工具等待。<br><b>代价：</b>正文已合成；Thinking 可能造成新分叉。</div>
+</article>
+<article class="method"><div class="head"><span class="num">05</span><h3>根据 Block Hash 重建</h3></div><p class="source">AgentX / AIPerf</p><p class="core">没有 Prompt 正文；用同一个 Hash 生成同一段合成 Token。</p>
+<div class="turn"><div class="turn-label">第 1 轮</div><div class="flow"><span class="token Xp">X1 X2 X3 X4</span><span class="arrow">→ Qwen →</span><span class="token B">B</span></div></div>
+<div class="turn"><div class="turn-label">第 2 轮输入（仍按原 Hash）</div><div class="flow"><span class="token Xp">X1 X2 X3 X4</span><span class="token T">X5 X6</span></div></div>
+<div class="verdict"><span class="tag limited">B 不保证出现在下一轮</span><br><b>保留：</b>原始 Hash 的前缀共享与分叉。<br><b>代价：</b>上一轮生成的 B 可能无法复用。</div>
+</article>
+<article class="method"><div class="head"><span class="num">06</span><h3>强制输出原始 Token</h3></div><p class="source">Teacher Forcing · 可选研究控制方法</p><p class="core">不让 Qwen 自由生成 B，而是强制让它处理 A 的 Token 序列。</p>
+<div class="turn"><div class="turn-label">第 1 轮</div><div class="flow"><span class="token P">P</span><span class="arrow">→ 强制处理 →</span><span class="token A">A</span></div></div>
+<div class="turn"><div class="turn-label">第 2 轮输入</div><div class="flow"><span class="token P">P</span><span class="token A">A</span><span class="token T">T</span></div></div>
+<div class="verdict"><span class="tag hard">原始一致，但实现较复杂</span><br><b>优点：</b>原始内容与计算状态都能精确对齐。<br><b>代价：</b>必须提取精确 Token，且可能改推理路径。</div>
+</article>
+</div></section>
+<section class="section panel">
+<h2>一眼看懂：它们到底保留了什么？</h2>
+<div class="tablewrap"><table><thead><tr><th>方案</th><th>第 2 轮输入</th><th>原始内容 / Hash</th><th>上一轮 Decode KV</th><th>成本</th></tr></thead><tbody>
+<tr><td>① 固定原始 Prompt</td><td><b>P+A+T</b></td><td>保留</td><td>B 不可复用</td><td>低</td></tr>
+<tr><td>② 模型输出反馈</td><td><b>P+B+T</b></td><td>改变回答</td><td>B 可复用*</td><td>低～中</td></tr>
+<tr><td>③ 真实 Agent 闭环</td><td><b>P+B+T′</b></td><td>运行轨迹可能改变</td><td>B 可复用*</td><td>高</td></tr>
+<tr><td>④ 合成消息反馈</td><td><b>P′+B+T′</b></td><td>保留结构，不保留正文</td><td>B 可复用*</td><td>中</td></tr>
+<tr><td>⑤ AgentX Hash 重建</td><td><b>X1…X6</b></td><td>保留 Hash 共享</td><td>B 不保证可复用</td><td>中</td></tr>
+<tr><td>⑥ 强制原始输出</td><td><b>P+A+T</b></td><td>保留</td><td>A 可复用*</td><td>高</td></tr>
+</tbody></table></div>
+<p class="small">* 还需满足 Token IDs、Chat Template、位置、Block 边界和 Recurrent State 一致，并且缓存仍驻留。若内部 Reasoning 未进入下一轮历史，即使反馈答案，也可能无法复用完整 Decode KV。</p>
+</section>
+<section class="section">
+<h2>放到你的 Qwen3.5 / vLLM 0.30.0 实验里</h2>
+<div class="recommend">
+<div><strong>LMCache：优先比较 ① 和 ②</strong><p style="font-size:14px;margin:0">① 严格复现原始 Prompt 的 LCP；② 让 Qwen 输出 B 参与下一轮，从而验证真实 Decode KV 的复用与驱逐。两者不能混报一个 Hit Rate。</p></div>
+<div><strong>AgentX：优先用 ⑤</strong><p style="font-size:14px;margin:0">它的核心价值就是 Hash 共享结构；不要为了复用 B 而随意修改 X5、X6，否则不再是原始 AgentX 的前缀访问模式。</p></div>
+</div>
+<div class="callout"><b>最重要的原则：</b>固定原始 Trace 时，保留了原始前缀结构，但生成的尾部 KV 可能不会被再次需要；反馈模型输出时，保留了实际计算状态的一致性，但改变了原始 Trace。<b>实验前先决定要保留哪个不变量。</b></div>
+</section>
+<footer class="foot"><b>参考实现 / 方法说明</b><div class="links">
+<a href="https://github.com/vllm-project/vllm/blob/v0.30.0/benchmarks/multi_turn/benchmark_serving_multi_turn.py" target="_blank" rel="noreferrer">vLLM 0.30.0 multi-turn</a>
+<a href="https://github.com/sgl-project/sglang/blob/main/docs/docs/developer_guide/bench_serving.mdx" target="_blank" rel="noreferrer">SGLang benchmark</a>
+<a href="https://github.com/ThunderAgent-org/ThunderAgent" target="_blank" rel="noreferrer">ThunderAgent</a>
+<a href="https://github.com/NVIDIA/TensorRT-LLM/blob/main/examples/scaffolding/trace_replay/README.md" target="_blank" rel="noreferrer">NVIDIA Trace Replay</a>
+<a href="https://inferencex.semianalysis.com/agentx/methodology" target="_blank" rel="noreferrer">AgentX Methodology</a>
+</div><p>本页是六种重放语义的直观对照，并非宣称所有方案都属于顶会论文的默认实验方法。示例 P/A/B/T 为说明目的而构造。</p></footer>
+</main></body></html>
