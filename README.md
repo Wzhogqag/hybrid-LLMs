@@ -14,6 +14,8 @@ Hybrid LLM 推理系统研究资料库，整理 **Prefix Caching、FA / SWA / SS
 | 04 | 2026-10-18 | [Jenga：异构内存管理、前缀复用与两级驱逐](https://wzhogqag.github.io/hybrid-LLMs/jenga-memory-prefix-cache-guide.html) | 结合 SOSP'25 论文与固定版本原型源码，解析 LCM 大页/子页、组内布局与地址映射、请求亲和分配、跨类型复用和两级驱逐；含交互例子。 | [`jenga-memory-prefix-cache-guide.html`](./jenga-memory-prefix-cache-guide.html) |
 | 05 | 2026-10-25 | [Motivation：LMCache Agent Trace 原始等待回放](https://wzhogqag.github.io/hybrid-LLMs/hybrid-cache-agent-natural-waits-results-2026-10-25.html) | Qwen3.5-9B / vLLM 0.30.0 / 单张 A800；10 会话、479 请求，保留原始请求间等待。分析总体 89.896% 的联合复用率、≥4 分钟等待后的 25.781% 联合复用率，以及 FA KV 与 recurrent checkpoint 的驻留失配。 | [`hybrid-cache-agent-natural-waits-results-2026-10-25.html`](./hybrid-cache-agent-natural-waits-results-2026-10-25.html) |
 
+| 06 | 2026-10-26 | [Agent Trace：六种重放方式对比](https://wzhogqag.github.io/hybrid-LLMs/agent-trace-replay-six-methods.html) | 用相同的两轮对话例子比较固定原始 Prompt、模型输出反馈、真实 Agent 闭环、合成消息反馈、Block Hash 重建和 Teacher Forcing；说明原始前缀结构与 Decode KV 复用的一致性取舍，并给出 LMCache / AgentX 实验建议。 | [`agent-trace-replay-six-methods.html`](./agent-trace-replay-six-methods.html) |
+
 ## 在线阅读
 
 - **GitHub Pages 首页**：https://wzhogqag.github.io/hybrid-LLMs/（当前为 Marconi 机制介绍）。
