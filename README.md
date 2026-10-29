@@ -16,6 +16,8 @@ Hybrid LLM 推理系统研究资料库，整理 **Prefix Caching、FA / SWA / SS
 
 | 06 | 2026-10-26 | [Agent Trace：六种重放方式对比](https://wzhogqag.github.io/hybrid-LLMs/agent-trace-replay-six-methods.html) | 用相同的两轮对话例子比较固定原始 Prompt、模型输出反馈、真实 Agent 闭环、合成消息反馈、Block Hash 重建和 Teacher Forcing；说明原始前缀结构与 Decode KV 复用的一致性取舍，并给出 LMCache / AgentX 实验建议。 | [`agent-trace-replay-six-methods.html`](./agent-trace-replay-six-methods.html) |
 
+| 07 | 2026-10-29 | [Motivation：Agent 输出反馈与 30 分钟长上下文缓存实验](https://wzhogqag.github.io/hybrid-LLMs/hybrid-cache-agent-feedback-window30m-30gb-results-2026-10-27.html) | Qwen3.5-27B BF16、2×A800（TP=2）、40 会话、每卡 KV 30GB、目标 0.2 req/s；30 分钟窗口共完成 345 请求，测量期 275 请求联合复用率 72.31%；长等待（≥4 分钟）返回请求仅 29.73%，分析 FA 连续前缀缺失与联合恢复边界损失，并校验真实输出反馈前缀。 | [`hybrid-cache-agent-feedback-window30m-30gb-results-2026-10-27.html`](./hybrid-cache-agent-feedback-window30m-30gb-results-2026-10-27.html) |
+
 ## 在线阅读
 
 - **GitHub Pages 首页**：https://wzhogqag.github.io/hybrid-LLMs/（当前为 Marconi 机制介绍）。
