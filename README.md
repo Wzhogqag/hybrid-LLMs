@@ -18,6 +18,8 @@ Hybrid LLM 推理系统研究资料库，整理 **Prefix Caching、FA / SWA / SS
 
 | 07 | 2026-10-29 | [Motivation：Agent 输出反馈与 30 分钟长上下文缓存实验](https://wzhogqag.github.io/hybrid-LLMs/hybrid-cache-agent-feedback-window30m-30gb-results-2026-10-27.html) | Qwen3.5-27B BF16、2×A800（TP=2）、40 会话、每卡 KV 30GB、目标 0.2 req/s；30 分钟窗口共完成 345 请求，测量期 275 请求联合复用率 72.31%；长等待（≥4 分钟）返回请求仅 29.73%，分析 FA 连续前缀缺失与联合恢复边界损失，并校验真实输出反馈前缀。 | [`hybrid-cache-agent-feedback-window30m-30gb-results-2026-10-27.html`](./hybrid-cache-agent-feedback-window30m-30gb-results-2026-10-27.html) |
 
+| 08 | 2026-11-04 | [DeepSeek：混合缓存全恢复点与容量对照](https://wzhogqag.github.io/hybrid-LLMs/deepseek-hybrid-cache-recovery-points-capacity-2026-11-04.html) | DeepSeek Hybrid Cache 的 CPU 管理层模拟：对比不同会话数与每 rank 30/60GB 容量下的前缀联合复用、G2 连续命中及局部状态缺口；交互式查看 256-token 对齐的 G0/G1(SWA)、G3/G4 压缩状态与现存/已驱逐恢复点，并检查内存覆盖压力。非真实 GPU 性能测量。 | [`deepseek-hybrid-cache-recovery-points-capacity-2026-11-04.html`](./deepseek-hybrid-cache-recovery-points-capacity-2026-11-04.html) |
+
 ## 在线阅读
 
 - **GitHub Pages 首页**：https://wzhogqag.github.io/hybrid-LLMs/（当前为 Marconi 机制介绍）。
