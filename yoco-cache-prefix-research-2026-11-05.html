@@ -1,0 +1,764 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>YOCO：架构、混合缓存与前缀复用</title><meta name="description" content="YOCO原论文、vLLM实现、混合状态恢复与前缀缓存研究笔记"><style>
+  :root{--ink:#173047;--muted:#627283;--accent:#135d72;--line:#dce5e9}
+  *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}
+  body{margin:0;background:#eff4f6;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif}
+  .layout{display:grid;grid-template-columns:245px minmax(0,1060px);gap:30px;max-width:1380px;margin:auto;padding:36px 28px}
+  aside{position:sticky;top:28px;align-self:start;height:calc(100vh - 56px);overflow:auto;padding:12px 3px}
+  .brand{font-size:25px;font-weight:800;letter-spacing:2px;color:#12495e}.aside-note{font-size:13px;line-height:1.7;color:var(--muted);margin:10px 0 25px}
+  nav{display:flex;flex-direction:column;gap:5px}nav a{font-size:13px;line-height:1.6;text-decoration:none;padding:8px 10px;border-radius:6px;color:#345165}nav a:hover{background:#dfeaf0;color:#12495e}
+  main{background:white;border:1px solid var(--line);border-radius:18px;padding:48px 52px;box-shadow:0 15px 50px #14324609}
+  h1{font-size:35px;line-height:1.35;letter-spacing:-.5px;margin:0 0 15px}h2{font-size:25px;line-height:1.5;border-top:1px solid var(--line);padding-top:31px;margin:44px 0 20px;scroll-margin-top:24px}h3{font-size:20px;line-height:1.6;margin:28px 0 15px}
+  p,li{font-size:16px;line-height:1.95}p{margin:15px 0}li{margin:8px 0}strong{color:#123f53;font-weight:700}
+  .subtitle{font-size:14px;color:var(--muted);margin:0 0 30px}.lead{font-size:18px;line-height:1.95;background:#edf6f8;border-left:4px solid #1d7084;border-radius:0 10px 10px 0;padding:22px 26px;margin:22px 0 28px}
+  a{color:#126a85;text-underline-offset:3px;overflow-wrap:anywhere}.ref{font-size:12px;white-space:nowrap;text-decoration:none}
+  table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.75;margin:23px 0;display:block;overflow-x:auto}th,td{padding:13px 15px;border:1px solid var(--line);vertical-align:top;text-align:left;min-width:115px}th{background:#eaf2f5;font-weight:700}tr:nth-child(even) td{background:#f8fafb}
+  .formula{font-size:19px;line-height:2;background:#f4f7fa;border:1px solid var(--line);border-radius:8px;padding:18px 24px;margin:22px 0;font-family:Georgia,"Times New Roman",serif;overflow-x:auto}
+  .callout{padding:18px 23px;background:#fff7e8;border-left:4px solid #c3943c;line-height:1.95;border-radius:0 8px 8px 0;margin:25px 0}
+  figure{margin:28px 0;background:#fafcfd;border:1px solid var(--line);border-radius:12px;padding:16px;overflow-x:auto}svg{width:100%;height:auto;min-width:550px;display:block}figcaption{font-size:13px;color:var(--muted);line-height:1.75;text-align:center;margin-top:10px}
+  code{background:#f0f4f7;border:1px solid #e3eaf0;border-radius:4px;padding:2px 5px;font-size:.87em;overflow-wrap:anywhere}
+  pre{padding:18px 20px;background:#122c3c;color:#e5eef4;border-radius:10px;overflow:auto;line-height:1.65;font-size:12px}pre code{padding:0;background:none;border:0;color:inherit}
+  blockquote{margin:25px 0;padding:16px 25px;border-left:4px solid #458b9c;background:#f1f7f8}blockquote p{margin:0}
+  .steps{padding-left:28px}.sources li{font-size:14px;line-height:1.9;margin-bottom:12px}.small{font-size:12px;line-height:1.85;color:var(--muted);overflow-wrap:anywhere}
+  details{margin:24px 0;border:1px solid var(--line);border-radius:8px;padding:14px 18px}summary{font-weight:700;cursor:pointer;color:#135d72;line-height:1.7}.footer{font-size:12px;color:var(--muted);margin-top:35px;border-top:1px solid var(--line);padding-top:20px}
+  @media(max-width:1000px){.layout{display:block;padding:20px}aside{position:static;height:auto;padding:0;margin:0 0 20px}nav{display:none}.aside-note{margin:6px 0}.brand{font-size:21px}main{padding:32px 30px}h1{font-size:29px}}
+  @media(max-width:600px){.layout{padding:12px}main{padding:28px 19px;border-radius:12px}h1{font-size:26px}h2{font-size:22px}p,li{font-size:15px}.lead{padding:17px 19px;font-size:16px}table{font-size:13px}th,td{padding:10px 12px}.formula{font-size:17px}figure{padding:10px}}
+  @media print{body{background:white}.layout{display:block;padding:0}aside{display:none}main{border:0;box-shadow:none;padding:0}h2{break-after:avoid}table,figure,.callout{break-inside:avoid}nav{display:none}details{display:none}a{color:inherit}}
+  </style></head><body><div class="layout"><aside><div class="brand">YOCO / CACHE</div><p class="aside-note">从计算依赖理解缓存复用<br>2026-11-05 · vLLM v0.30.0</p><nav aria-label="目录"><a href="#section-1">1. 先拆开三个容易混在一起的概念</a><a href="#section-2">2. 架构：前半部分写记忆，后半部分反复读取</a><a href="#paper-config">↳ 论文配置：13+13 层与 ABCD</a><a href="#fa-hidden-clarification">↳ Full Attention 的最终 hidden state</a><a href="#section-3">3. 为什么大部分 prompt 可以跳过后半模型？</a><a href="#paper-complexity">↳ 原表截图与复杂度逐项拆解</a><a href="#section-4">4. 前半部分到底保存什么？</a><a href="#section-5">5. 显存：减少了全局 KV，也改变了检查点的相对成本</a><a href="#section-6">6. 前缀复用：需要“全局历史”与“续算状态”两样东西</a><a href="#section-7">7. 一个贯穿例子：命中到 12，不等于省掉 12 个 token 的计算</a><a href="#section-8">8. 为什么原版 YOCO 的恢复与交错混合模型不一样？</a><a href="#section-9">9. 驱逐与分配：真正要管理的是哪些对象？</a><a href="#section-10">10. vLLM：已支持什么，以及没有证明什么？</a><a href="#section-11">11. 大厂采用：公开证据已经不止“正在看”</a><a href="#section-12">12. 对当前课题，更有价值的切入点是什么？</a><a href="#section-13">13. 论文效果应该如何读？</a><a href="#section-14">14. 小型数值核验与范围</a><a href="#section-15">15. 一手来源与源码入口</a></nav></aside><main><h1>YOCO：架构、混合缓存与前缀复用</h1>
+<p class="subtitle">初版 2026-11-05 · 更新 2026-11-08 · 原论文、参考实现与 vLLM v0.30.0 源码对照</p>
+
+<div class="lead"><strong>核心判断：</strong>YOCO 把“生成历史表示”和“读取历史表示”分到了模型的前后两部分。它显著减少全局 KV 的层间重复，却仍然需要管理前半部分的循环状态或滑动窗口。对混合模型 serving，关键变化是<strong>哪些状态必须保留、哪些可以重建，以及重建到底执行模型的哪一部分</strong>。</div>
+
+<p>本文区分三类内容：带来源的公开事实、从计算依赖得到的推导、以及尚需实测的研究判断。所有具体 DeepSeek 数字仅针对公开的 <strong>DeepSeek-V4.1-Flash</strong>，不套用到其他 V4 / Pro 配置。未运行真实模型性能实验；附录的 CPU 小模型只验证依赖关系。</p>
+<h2 id="section-1">1. 先拆开三个容易混在一起的概念</h2>
+<table>
+<thead>
+<tr>
+<th>概念</th>
+<th>共享什么</th>
+<th>解决什么问题</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>普通 KV cache</td>
+<td>同一请求先前 token 的 K/V</td>
+<td>后续生成无需重算全部历史</td>
+</tr>
+<tr>
+<td>YOCO 的跨层共享</td>
+<td>同一组历史 K/V，被多个网络层读取</td>
+<td>减少层与层之间重复保存的 KV</td>
+</tr>
+<tr>
+<td>跨请求 prefix cache</td>
+<td>同一模型、相同前缀的缓存块和恢复状态</td>
+<td>后来的请求跳过已完成的前缀计算</td>
+</tr>
+</tbody></table>
+<p>这三个机制可以叠加。YOCO 名字里的“once”指<strong>全局 KV 保存一份供后半部分读取</strong>，不是整台服务器只存一份缓存，也不是所有请求只计算一次。原论文明确说明 self-decoder 仍有自己的有界缓存。<a class="ref" href="#s1">[1]</a></p>
+<p>GQA/MQA 让多个 query head 共用 KV head；CLA 让若干层共用 KV；YOCO 则进一步组织前后半部分的计算，使一大段后续层不再产生历史 KV。原始 CLA 的典型设置是相邻层共享，并不自动带来“后半模型整体跳过 prefill”。<a class="ref" href="#s6">[6]</a></p>
+<h2 id="section-2">2. 架构：前半部分写记忆，后半部分反复读取</h2>
+<p>原版 YOCO 有两部分：self-decoder 使用 gated retention 或 SWA；其输出产生共享全局 KV；cross-decoder 的每层以自己的 query 访问这份 KV。两部分均保持因果性。它于 2024 年 5 月提出，发表于 NeurIPS 2024。<a class="ref" href="#s1">[1]</a></p>
+<figure>
+<svg viewBox="0 0 790 555" role="img" aria-label="YOCO计算依赖图：self decoder产生共享KV和自身状态，三个cross层各自计算query并读取同一份KV。">
+<rect x="0" y="0" width="790" height="555" fill="#fafcfd"/>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#60758a"/></marker></defs>
+<g font-family="system-ui, sans-serif" font-size="16" fill="#173047">
+<text x="240" y="30" text-anchor="middle" font-weight="700">LM Head → 下一个 token</text>
+<g fill="#edf4ff" stroke="#91afd2" stroke-width="1.5">
+<rect x="90" y="60" width="300" height="50" rx="10"/>
+<rect x="90" y="135" width="300" height="50" rx="10"/>
+<rect x="90" y="210" width="300" height="50" rx="10"/>
+</g>
+<text x="240" y="91" text-anchor="middle">Cross 层 3：自己的 Q₃</text>
+<text x="240" y="166" text-anchor="middle">Cross 层 2：自己的 Q₂</text>
+<text x="240" y="241" text-anchor="middle">Cross 层 1：自己的 Q₁</text>
+<rect x="90" y="302" width="300" height="56" rx="10" fill="#eff8f4" stroke="#82b49e" stroke-width="1.5"/>
+<text x="240" y="336" text-anchor="middle">Self-decoder 输出 M</text>
+<rect x="90" y="398" width="300" height="65" rx="10" fill="#eff8f4" stroke="#82b49e" stroke-width="1.5"/>
+<text x="240" y="426" text-anchor="middle">Self 层 1 … m</text>
+<text x="240" y="450" text-anchor="middle" font-size="14">gated retention 或 SWA</text>
+<text x="240" y="520" text-anchor="middle">token embedding</text>
+<g fill="none" stroke="#60758a" stroke-width="2" marker-end="url(#arrow)">
+<path d="M240,496 L240,466"/><path d="M240,398 L240,362"/>
+<path d="M240,302 L240,264"/><path d="M240,210 L240,189"/>
+<path d="M240,135 L240,114"/><path d="M240,60 L240,39"/>
+</g>
+<rect x="488" y="278" width="255" height="102" rx="12" fill="#fff4df" stroke="#d4ad63" stroke-width="1.5"/>
+<text x="615" y="311" text-anchor="middle" font-weight="700">一份共享的全局 K / V</text>
+<text x="615" y="339" text-anchor="middle">随序列长度增长</text>
+<text x="615" y="364" text-anchor="middle" font-size="14">各 Cross 层读取相同的张量</text>
+<path d="M390,330 L483,330" fill="none" stroke="#b18c46" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="439" y="316" text-anchor="middle" font-size="13">投影一次</text>
+<g fill="none" stroke="#b18c46" stroke-width="2" marker-end="url(#arrow)">
+<path d="M615,278 L615,85 L395,85"/><path d="M615,160 L395,160"/><path d="M615,235 L395,235"/>
+</g>
+<rect x="488" y="415" width="255" height="72" rx="10" fill="#f5f0fa" stroke="#b19bc7" stroke-width="1.5"/>
+<text x="615" y="445" text-anchor="middle">各 Self 层自己的状态</text>
+<text x="615" y="471" text-anchor="middle" font-size="14">循环矩阵，或窗口 K / V</text>
+<path d="M390,432 L483,448" fill="none" stroke="#a28bb7" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+</g></svg>
+<figcaption>为便于阅读，只画三个 Cross 层。示意图不代表某个已发布模型的层数。</figcaption>
+</figure>
+<section class="paper-config-insert">
+<h3 id="paper-config">图后补充：论文 YOCO-3B 的实际配置与 ABCD 演示</h3>
+<p class="small">2026-11-07 补充。上一张图只画三个 Cross 模块来表达共享关系；这里改用论文 §4.1 / 附录 C 的 YOCO-3B 配置，并与微软参考实现的 yoco_3b 参数核对。图中网络层采用从 1 开始的编号。</p>
+<table><thead><tr><th>项目</th><th>论文 / 参考实现配置</th></tr></thead><tbody>
+<tr><td>总层数</td><td>26：前 13 层 Self-decoder，后 13 层 Cross-decoder</td></tr>
+<tr><td>Hidden dimension / FFN intermediate</td><td>3072 / 8192</td></tr>
+<tr><td>Self 的 token mixer</td><td>gated retention；24 个 head，每 head 维度 128（参考实现配置）</td></tr>
+<tr><td>Cross query heads / shared KV heads</td><td>24 / 8；每 head 维度 128，采用 GQA</td></tr>
+<tr><td>词表大小</td><td>100,288</td></tr>
+<tr><td>原始训练长度 / 后续长度扩展</td><td>4096；YOCO-3B-1M 后续扩展至 1,048,576 tokens</td></tr>
+</tbody></table>
+<p>来源：<a href="https://arxiv.org/html/2405.05254v1">原论文 §4.1、附录 C / E</a>；<a href="https://github.com/microsoft/unilm/blob/master/YOCO/yoco/models/yoco.py#L147">微软 yoco_3b 配置函数</a>。<strong>这款 3B 主实验模型使用 gRet，没有 SWA window 参数；论文另做了 SWA 变体的规模实验，不能把那个窗口直接套到本配置。</strong></p>
+<figure>
+<svg viewBox="0 0 850 655" role="img" aria-label="论文YOCO-3B实际层数：Self第1至13层有各自循环矩阵，Cross第14至26层读取同一份共享KV。D的表示为3072维。">
+<rect width="850" height="655" fill="#fafcfd"/>
+<defs><marker id="paper-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#62788a"/></marker></defs>
+<g font-family="Arial, sans-serif" fill="#173047" font-size="16">
+<text x="235" y="30" text-anchor="middle" font-weight="700">LM Head: logits for E</text>
+<g fill="#edf4ff" stroke="#91afd2" stroke-width="1.5">
+<rect x="75" y="65" width="320" height="55" rx="10"/>
+<rect x="75" y="145" width="320" height="55" rx="10"/>
+<rect x="75" y="225" width="320" height="55" rx="10"/>
+</g>
+<text x="235" y="87" text-anchor="middle" font-weight="700">Cross layer 26</text>
+<text x="235" y="109" text-anchor="middle" font-size="14">own Q: [1, 1, 24, 128]</text>
+<text x="235" y="167" text-anchor="middle" font-weight="700">Cross layers 15 ... 25</text>
+<text x="235" y="189" text-anchor="middle" font-size="14">each layer has its own Q</text>
+<text x="235" y="247" text-anchor="middle" font-weight="700">Cross layer 14</text>
+<text x="235" y="269" text-anchor="middle" font-size="14">own Q: [1, 1, 24, 128]</text>
+<rect x="75" y="315" width="320" height="50" rx="10" fill="#eff8f4" stroke="#82b49e" stroke-width="1.5"/>
+<text x="235" y="346" text-anchor="middle">M_D: [1, 1, 3072]</text>
+<rect x="75" y="405" width="320" height="65" rx="10" fill="#eff8f4" stroke="#82b49e" stroke-width="1.5"/>
+<text x="235" y="432" text-anchor="middle" font-weight="700">Self layers 1 ... 13: gRet</text>
+<text x="235" y="456" text-anchor="middle" font-size="14">13 independent recurrent states</text>
+<rect x="75" y="515" width="320" height="55" rx="10" fill="#f2f5f8" stroke="#b1c2ce" stroke-width="1.5"/>
+<text x="235" y="548" text-anchor="middle">Embedding(D): [1, 1, 3072]</text>
+<text x="235" y="609" text-anchor="middle">input token D, position 3</text>
+<g fill="none" stroke="#62788a" stroke-width="2" marker-end="url(#paper-arrow)">
+<path d="M235,590 L235,575"/><path d="M235,515 L235,475"/>
+<path d="M235,405 L235,370"/><path d="M235,315 L235,285"/>
+<path d="M235,225 L235,205"/><path d="M235,145 L235,125"/>
+<path d="M235,65 L235,39"/>
+</g>
+<rect x="495" y="285" width="300" height="110" rx="12" fill="#fff4df" stroke="#d4ad63" stroke-width="1.5"/>
+<text x="645" y="315" text-anchor="middle" font-weight="700">Shared global K / V: ABCD</text>
+<text x="645" y="344" text-anchor="middle">[1, 4, 8, 128] each</text>
+<text x="645" y="374" text-anchor="middle" font-size="14">one K/V pair: 16 KiB in BF16</text>
+<path d="M395,340 L490,340" fill="none" stroke="#b18c46" stroke-width="2" marker-end="url(#paper-arrow)"/>
+<text x="445" y="327" text-anchor="middle" font-size="12">K/V projection</text>
+<g fill="none" stroke="#b18c46" stroke-width="2" marker-end="url(#paper-arrow)">
+<path d="M795,340 L825,340 L825,92 L400,92"/>
+<path d="M825,172 L400,172"/><path d="M825,252 L400,252"/>
+</g>
+<rect x="495" y="430" width="300" height="85" rx="10" fill="#f5f0fa" stroke="#b19bc7" stroke-width="1.5"/>
+<text x="645" y="455" text-anchor="middle" font-weight="700">S_C(l) -&gt; S_D(l), l = 1 ... 13</text>
+<text x="645" y="481" text-anchor="middle" font-size="14">each matrix: [1, 24, 128, 128]</text>
+<text x="645" y="503" text-anchor="middle" font-size="13">all 13: 9.75 MiB if stored in BF16</text>
+<g fill="none" stroke="#a28bb7" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#paper-arrow)">
+<path d="M495,450 L400,422"/><path d="M395,461 L490,490"/>
+</g>
+<text x="425" y="641" text-anchor="middle" font-size="13" fill="#627283">Batch = 1, TP = 1. Logical tensor shapes; no allocator padding.</text>
+</g>
+</svg>
+<figcaption>实际为 13 个 Self 层和 13 个 Cross 层。中间盒子“15…25”合并画出 11 个 Cross 层。全局 KV 只存一份；13 份循环矩阵分别属于 13 个 Self 层。</figcaption>
+</figure>
+<p><strong>固定到 ABC 已处理完、现在计算 D 预测 E：</strong>此时应已有共享 K<sub>ABC</sub><sup>G</sup> / V<sub>ABC</sub><sup>G</sup>，以及 13 个 S<sub>C</sub><sup>(ℓ)</sup>。D 的新输入是 token ID / embedding 与位置；历史信息由这些已有状态提供。下表省略归一化、位置编码、残差和 FFN 的内部算子，但它们仍在相应层中执行。</p>
+<table><thead><tr><th>执行阶段</th><th>D 的形状 / 操作</th><th>历史依赖与结果</th></tr></thead><tbody>
+<tr><td>Embedding</td><td>[1,1,3072]</td><td>D 的 token ID 查表；不额外输入 C 的最后一层 hidden state</td></tr>
+<tr><td>Self 1…13</td><td>逐层传递 D 当前的 3072 维表示</td><td>第 ℓ 层读取 S<sub>C</sub><sup>(ℓ)</sup>，更新为 S<sub>D</sub><sup>(ℓ)</sup>；最后得到 M<sub>D</sub></td></tr>
+<tr><td>共享 KV 投影</td><td>K/V 各由 3072 投影为 8×128=1024 维</td><td>为 D 各追加 [1,1,8,128]；已有 ABC 全局 KV 不变</td></tr>
+<tr><td>Cross 14…26</td><td>每层自己的 Q 为 [1,1,24,128]</td><td>各层都读取同一份 K/V：各 [1,4,8,128]，包括 ABC 与当前 D</td></tr>
+<tr><td>最终 Norm / LM Head</td><td>[1,1,3072] → 100,288 维词表 logits</td><td>按解码规则选出 E；下一步重新查 Embedding(E)</td></tr>
+</tbody></table>
+<p>共享 KV 的 BF16 payload 为 2×N×8×128×2 = <strong>4096N 字节</strong>。ABC 为 12 KiB，ABCD 为 16 KiB；长度 32,768 时为 128 MiB，长度 1,048,576 时为 4 GiB。<strong>这些数字无需再乘后半部分的 13 层。</strong>它们是按真实维度计算的逻辑 payload，不含分页填充、复制和临时激活。</p>
+<p>每个 Self 层的循环矩阵为 [1,24,128,128]；13 层合计 5,111,808 个元素。若按 BF16 保存矩阵，完整状态包为 9.75 MiB；若按 FP32 保存则为 19.5 MiB。精度由实际实现决定，此处同时列出两种计费。一个历史 checkpoint 需要保存对应边界的完整状态包；当前请求连续执行时，直接使用 GPU 上已经更新的工作状态。</p>
+<div class="callout"><strong>同一配置的 prefill 路径：</strong>A、B、C 经过前 13 层并形成共享 KV 与循环状态，可以跳过后 13 层；D 经过前 13 层、追加自己的共享 KV，再走后 13 层预测 E。实际 prefill 通常批量或分块执行，不要求将 A、B、C、D 分成四次 kernel 调用。</div>
+<h3 id="fa-hidden-clarification">补充：普通 Full Attention 中，最后一层 hidden state 的用途</h3>
+<p>标准 decoder-only Transformer 中，D 的最终 hidden state 会用于<strong>预测下一个 token E</strong>。E 确定后，处理 E 的新一轮前向通常不再直接读取 D 的最终 hidden state，而是读取各层已保存的 D 的 K/V。</p>
+<div class="formula">h<sub>D</sub><sup>L</sup> → LM Head → E 的 token ID → Embedding(E)</div>
+<p>这里同时存在另一条历史信息路径：第 ℓ 层处理 D 时，由该层输入（通常先经 Norm）生成并保存 K<sub>D</sub><sup>(ℓ)</sup>、V<sub>D</sub><sup>(ℓ)</sup>；处理 E 时，E 在第 ℓ 层的 query 读取这些 KV。最后一个 Attention 层的 KV 也由该层<strong>输入</strong>产生，不是把整网最终输出 h<sub>D</sub><sup>L</sup> 再投影一次才得到。</p>
+<table><thead><tr><th>“用于下一个 token”的具体含义</th><th>标准 Full Attention</th></tr></thead><tbody>
+<tr><td>用 D 的最终 hidden state 预测 E 的分布</td><td>会</td></tr>
+<tr><td>E 已确定后，把 D 的最终 hidden state 额外拼进 E 的 embedding</td><td>通常不会</td></tr>
+<tr><td>E 计算时读取 D 留下的历史信息</td><td>会，通过各层 K/V</td></tr>
+</tbody></table>
+<p class="small">以上讨论标准自回归前向，不把额外保存特征的推测解码、跨步 hidden-state 复用等扩展机制算入。</p>
+</section>
+
+
+<p>用符号表示，令 self-decoder 对 token t 的输出为 M<sub>t</sub>。共享记忆由 M<sub>t</sub> 经归一化、K/V 投影和相应位置编码得到；第 j 个 cross 层则从该层自己的输入计算 Q<sub>t</sub><sup>j</sup>，读取位置不晚于 t 的共享记忆。</p>
+<p>每层的 query、残差流、输出投影和 FFN 仍然不同，因此<strong>共享记忆不等于所有层输出一样</strong>。后续层可以带着不断更新的问题，反复检索同一份材料。参考实现的 CrossDecoder 在层循环外生成 K/V，在循环内将它们传给所有 CrossAttention。<a class="ref" href="#s2">[2]</a></p>
+<p>“decoder-decoder”也不表示生成两遍文本：输入一个 token，先经过 self-decoder，再经过 cross-decoder，最后预测下一个 token。生成出的 token 仍会在下一步进入前半部分。因果性保证旧前缀的表示不依赖后来的后缀，所以跨请求精确前缀共享依旧成立。</p>
+<h2 id="section-3">3. 为什么大部分 prompt 可以跳过后半模型？</h2>
+<p>设 prompt 为 A B C D，需要预测 E。下面是原版 YOCO 的一种合法执行方式：</p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>Self-decoder</th>
+<th>生成共享 KV</th>
+<th>Cross-decoder</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A、B、C</td>
+<td>执行</td>
+<td>保存对应 K/V</td>
+<td>可以跳过</td>
+</tr>
+<tr>
+<td>D</td>
+<td>执行</td>
+<td>保存 D 的 K/V</td>
+<td>执行，读取 A…D 的共享 KV，预测 E</td>
+</tr>
+<tr>
+<td>后续输入 E</td>
+<td>更新自身状态</td>
+<td>追加 E 的 K/V</td>
+<td>执行，预测 F</td>
+</tr>
+</tbody></table>
+<p>推导原因：假设在 D 的第一个 cross 层要读取 A、B、C 的历史。它读取的是<strong>前半部分已经产生的共享 KV</strong>，没有依赖 A、B、C 在任何 cross 层的旧 hidden state。第二、第三个 cross 层同理，只需要 D 的前一层输出和同一份全局 KV。</p>
+<p>因此跳过这些旧 token 的 cross 计算，不会丢失未来依赖。参考生成代码确实先对 prompt 的前 N−1 个 token 使用 skip_cross_decoder，再让最后一个 prompt token 完整前向以采样。<a class="ref" href="#s5">[5]</a></p>
+<p>有两个边界：</p>
+<ul>
+<li>请求每个 prompt token 的 logprob，或者训练时对所有位置计算语言模型损失，就需要这些位置的后半部分输出，不能照搬这种跳过方式。</li>
+<li>每次 decode 的当前 token 仍然要经过后半模型；多个 cross 层仍分别读取共享历史。容量只存一次，不代表 HBM 只读一次。实际读流量还受片上缓存和 kernel 实现影响。</li>
+</ul>
+<p>所以，YOCO 的快 prefill 与跨请求 prefix caching 是两个独立维度：即使一个请求没有任何前缀命中，也能享受架构本身的 prefill 跳过；命中后还可以进一步少算前半部分。</p>
+
+<section class="complexity-insert">
+<h3 id="paper-complexity">原论文的两张复杂度表：KV 为什么是乘法 / 加法，Prefill 为什么有 N² / N？</h3>
+<p class="small">2026-11-08 补充。以下为论文 arXiv v2 PDF 第 4 页两张表的原图裁切，左右并排呈现；公式没有改写。不同版本表号可能不同。中文说明与逐项推导由本笔记补充。</p>
+<figure class="original-complexity-figure">
+<img src="data:image/png;base64,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" alt="论文两张原表：Transformer KV Cache Memory为O(LND)，YOCO为O((N+L)D)；Transformer attention Prefilling Time为O(LN²D)，YOCO为O(LND)。" style="display:block;width:100%;max-width:1100px;min-width:680px;height:auto"/>
+<figcaption>左：KV cache 存储量；右：attention 模块的 prefill 复杂度。<a href="https://arxiv.org/pdf/2405.05254#page=4">查看论文 PDF 第 4 页</a>。截图仅保留表体；下面用中文逐项解释。</figcaption>
+</figure>
+<table><thead><tr><th>比较对象</th><th>普通 Transformer / Full Attention</th><th>原版 YOCO</th></tr></thead><tbody>
+<tr><td>KV / 推理状态的存储量</td><td>O(LND)</td><td>O((N+L)D) = O(ND+LD)</td></tr>
+<tr><td>Attention 模块的 prefill 计算</td><td>O(LN<sup>2</sup>D)</td><td>O(LND)</td></tr>
+</tbody></table>
+<div class="callout"><strong>先区别“留多少”和“算多少”：</strong>左表数的是保存下来的缓存元素，右表比较 attention 的计算增长阶。两个表里都能出现 O(LND)，但统计对象和单位不同。它们不是完整显存字节数，也不是可以直接换算成毫秒的精确 FLOPs。</div>
+<table><thead><tr><th>符号</th><th>含义</th><th>套到前面的 YOCO-3B</th></tr></thead><tbody>
+<tr><td>L</td><td>整个模型的层数；L/2 与 L 在大 O 中只差常数</td><td>26，其中 Self 13 层、Cross 13 层</td></tr>
+<tr><td>N</td><td>本次处理的输入 token 数</td><td>ABCD 时为 4；32K 输入时为 32,768</td></tr>
+<tr><td>D</td><td>模型 hidden dimension；不是示例中的字符 token D</td><td>3072</td></tr>
+<tr><td>O(…)</td><td>描述随规模增长的阶，省略固定常数</td><td>例如 K 与 V 的两份、BF16 的 2 字节、前后各一半层数都要在实际计费时补回</td></tr>
+</tbody></table>
+
+<h3>先读左表：为什么一个是 L×N×D，另一个是 N×D + L×D？</h3>
+<p><strong>普通 Full Attention：</strong>每层保存 N 个历史位置的 K/V，每个位置的表示宽度与 D 成比例，所以一层是 ND，L 层是 LND。此处把固定的 GQA 比例、K/V 两份和元素字节数省略了。</p>
+<div class="formula">普通 Transformer：L 层 × N 个位置 × 每位置约 D 的宽度 → O(LND)</div>
+<p><strong>YOCO：</strong>全局 KV 只保存一套，因此这一项为 ND；各 Self 层仍有自己的有界状态，按论文固定局部配置的简写，每层与 D 成比例，L 层给出 LD。两种独立存储对象要相加：</p>
+<div class="formula">一份全局 KV + 各 Self 层的局部状态<br>ND + LD = (N+L)D → O((N+L)D)</div>
+<p>所以，N+L 并不是把“token 数”和“网络层数”当作同一种物理量直接相加：它是把两项存储规模 ND 与 LD 合并写在一起。更早的字节计费式 <strong>Ng + S</strong> 正好对应这两项：Ng 是共享 KV，S 是所有 Self 层当前状态。</p>
+<p>这里也不能把 gRet 状态误认为只有一个 D 维向量。实际每层有多个矩阵；窗口宽度、每个 head 的维度等被当作固定配置，才出现这张简写表。详细维度在下方“更精确地展开”中说明。</p>
+
+<h3>再读右表：Full Attention 为什么多出一个 N？</h3>
+<p>Prefill 时，一层有 N 个输入位置，每个位置都要作为 query 读取此前的 key。把所有位置展开，相当于<strong>N 个 query × 约 N 个 key</strong>。每次 query-key 点积还要沿 head 的维度计算；各 head 合起来与 D 成比例，所以一层是 N²D，再乘 L 层。</p>
+<div class="formula">L 层 × N 个 query × 约 N 个 key × 点积宽度 D<br>→ O(LN<sup>2</sup>D)</div>
+<p>因果掩码只保留下三角。对于 ABCD，一层的读取关系为：</p>
+<table><thead><tr><th>Query 位置</th><th>Full Attention 需要读取的 key</th><th>原版 YOCO 后半 Cross-decoder</th></tr></thead><tbody>
+<tr><td>A</td><td>A：1 个</td><td>该旧 prompt 位置可以跳过</td></tr>
+<tr><td>B</td><td>A、B：2 个</td><td>可以跳过</td></tr>
+<tr><td>C</td><td>A、B、C：3 个</td><td>可以跳过</td></tr>
+<tr><td>D</td><td>A、B、C、D：4 个</td><td>只执行 D 的 query，读取同一套 ABCD 全局 KV</td></tr>
+</tbody></table>
+<p>普通 attention 的合法 query-key 对共有 1+2+3+4=10 个；一般 N 时为 N(N+1)/2，增长阶仍是 N²。除以 2 不改变大 O。对 attention 概率再乘 V 也有相同的 N²D 量级，因此不会改变表中的阶。</p>
+
+<h3>YOCO 为什么可以写成 LND？两部分都要看</h3>
+<p><strong>前半部分：</strong>gRet 不让每个新 query 显式扫描越来越长的全部历史，而是更新固定形状的循环矩阵。固定 head 维度后，每 token 的状态更新 / 读取成本不随此前 token 数增加，因此处理 N 个位置是线性增长。SWA 则是每个位置最多读取固定 W 个 key，一层为 NWD；W 固定后，同样对 N 线性。</p>
+<p><strong>后半部分：</strong>A、B、C 等旧 prompt 位置不需要执行 Cross-decoder；为了预测首个新 token，只需最后一个 prompt 位置的输出。一层由 N 个 query 各读 N 个 key，变成<strong>1 个 query 读 N 个 key</strong>，即 ND；所有 Cross 层合计仍是 LND 量级。</p>
+<div class="formula">前半：N 个位置 × 固定形状的历史处理<br>后半：只保留末尾 query × N 个历史 key<br>两者都对 N 线性 → 表中 O(LND)</div>
+<p><strong>只共享 KV 不足以消掉 N²：</strong>如果后半部分仍对全部 N 个 prompt 位置做全局 attention，它仍有 N×N 个 query-key 关系。YOCO 还利用计算依赖，跳过了旧 prompt 位置的后半计算。D 的计算仍然会读取 A…D 的全局 KV；它没有放弃全局历史。</p>
+<p>套到论文 26 层配置：前 13 层处理全部 N 个 token 并产生共享 KV 与循环状态；后 13 层只对末尾 prompt 位置产生所需输出。L/2 与 L 的系数差异、不同算子的常数，都被大 O 省略，不能拿“10 对与 4 对”直接预测整个模型的加速倍数。</p>
+
+<table><thead><tr><th>只把输入长度 N 翻倍，其他配置保持不变</th><th>普通 Transformer</th><th>原版 YOCO</th></tr></thead><tbody>
+<tr><td>历史缓存</td><td>KV 随 N 线性增长</td><td>共享 KV 翻倍；一份当前循环状态或固定窗口容量保持不变</td></tr>
+<tr><td>表中的 attention 计算增长</td><td>长序列下约变为 4 倍</td><td>约变为 2 倍</td></tr>
+<tr><td>实际端到端 prefill 延迟</td><td colspan="2">还受 FFN、投影、带宽、批处理、kernel 和硬件利用率影响，不能直接按上面倍数换算</td></tr>
+</tbody></table>
+
+<details class="complexity-details"><summary>更精确地展开：被省略的窗口、head 维度和 ND² 在哪里？</summary>
+<p>以下为按张量维度补全的说明。设 L<sub>s</sub> 为 Self 层数，L<sub>c</sub> 为 Cross 层数；D<sub>kv</sub> 为全部 KV head 的总宽度，D<sub>s</sub> 为 Self 的总 head 宽度，d<sub>h</sub> 为每个循环 head 的维度，s 为元素字节数。</p>
+<ul>
+<li><strong>普通 KV payload：</strong>同规格各层时，M = 2LN D<sub>kv</sub>s。固定 GQA 比例下 D<sub>kv</sub> 与 D 成比例，便简写成 O(LND)。</li>
+<li><strong>YOCO-SWA：</strong>M = 2N D<sub>kv</sub>s + 2L<sub>s</sub>min(N,W)D<sub>s</sub>s。长度足够且 W 固定时，得到全局 ND 与局部 LD 两项。</li>
+<li><strong>YOCO-gRet：</strong>一层矩阵的元素数为 H d<sub>h</sub>² = D<sub>s</sub>d<sub>h</sub>，所以其状态项更明确地写为 L<sub>s</sub>D<sub>s</sub>d<sub>h</sub>s<sub>state</sub>。d<sub>h</sub>固定时对 D<sub>s</sub>线性；若让每个 head 维度也随模型宽度增长，就应保留这个因子。</li>
+<li><strong>gRet 的历史混合计算：</strong>每层约 O(ND<sub>s</sub>d<sub>h</sub>)；SWA 为 O(NWD<sub>s</sub>)。固定 d<sub>h</sub> 或 W 后，都是对 N 线性。</li>
+</ul>
+<div class="callout"><strong>右表限定的是 attention 模块，不是整网全部算子。</strong>Q/K/V 投影、输出投影、FFN 还要做逐 token 的稠密矩阵乘法；FFN 宽度与 D 成比例时，典型成本为 O(ND²)。原表标题虽写 Prefilling Time，表注限定了 attention modules。读取时必须保留这一范围。</div>
+<p>例如，普通 dense Transformer 的完整 prefill 计算量通常包含 <strong>O(LND² + LN²D)</strong>：前项是稠密投影 / FFN 等，后项是全局 attention。YOCO 仍需计算前半部分全部 token 的稠密算子；最后一个 prompt 位置也要经过后半部分。其计算在固定模型配置下对输入长度 N 仍可线性增长，但不能因此把完整 FLOPs 直接写成原表的 LND。</p>
+<p>这两张表也没有覆盖：模型权重与临时激活的总显存、批大小变化、额外保存很多历史 checkpoints 的成本，以及要求全部 prompt logprob / 训练时逐位置输出的情况。它们用于解释原版 YOCO 普通自回归生成路径的增长趋势。</p>
+</details>
+</section>
+<h2 id="section-4">4. 前半部分到底保存什么？</h2>
+<h3>4.1 Gated retention：每层、每个 head 一份循环矩阵</h3>
+<p>简化一个 head 的更新：</p>
+<div class="formula">S<sub>t</sub> = γ<sub>t</sub> S<sub>t−1</sub> + k<sub>t</sub><sup>T</sup>v<sub>t</sub><br>o<sub>t</sub> = q<sub>t</sub>S<sub>t</sub></div>
+
+<p>S 的大小由 head 维度决定，不随已经读过的 token 数增长。“constant state”说的是相对序列长度为常数，实际可能是较大的矩阵，并且有多层、多 head。参考代码按 Self 层分别维护 incremental_state，gated retention 的历史矩阵保存在 last_hidden_state。<a class="ref" href="#s3">[3]</a></p>
+<p>由更新式可以推出：</p>
+<ol>
+<li>保存边界 p 的完整状态包 C<sub>p</sub>，即所有 Self 层在同一前缀边界的状态，能够从下一个 token 继续。</li>
+<li>只保存结束位置 N 的状态，不能一般地裁剪出更早 p 的状态。尤其新请求在 p 之后分叉时，C<sub>N</sub> 已混入错误后缀。</li>
+<li>全局 KV 是前半部分最终表示的投影，不能一般地反推出所有较浅层的循环状态。投影可能降维，而且并未保存每层的中间结果。</li>
+<li>有 C<sub>q</sub> 且 q &lt; p，可以沿相同前缀重放 q+1…p，得到精确 C<sub>p</sub>；没有更早检查点时，可以从初始状态开始。</li>
+</ol>
+<p>这里的“精确”指模型定义的计算等价。不同 GPU kernel、批大小或 scan 分块可能带来浮点误差，不能直接承诺逐 bit 相同。</p>
+<h3>4.2 SWA：每层窗口内的 KV</h3>
+<p>SWA 版本的 Self 层仍然各有自己的 K/V。参考实现为每层维护有界的 prev_key / prev_value，滑动窗口限制到固定范围。<a class="ref" href="#s4">[4]</a></p>
+<p>若边界 p 所需的各层窗口已经保存，恢复它们便可继续精确计算；不需要重新读完整前缀。</p>
+<p>但如果这些窗口丢了，<strong>重新喂最后 W 个原始 token 不一般等于精确恢复</strong>。例如两层纯 SWA、窗口为 3（含当前 token）：</p>
+<ul>
+<li>第二层 token 8 的输出读取第二层位置 6、7、8 的 K/V。</li>
+<li>第二层位置 6 的 K/V 来自第一层位置 6 的 hidden state。</li>
+<li>第一层位置 6 又读取原始位置 4、5、6。</li>
+<li>因此重算第二层位置 8 的完整依赖覆盖原始位置 4…8，共 5 个 token。</li>
+</ul>
+<p>对只有 SWA 与逐 token 运算的 m 层前半部分，单个输出的输入感受野最多为 1 + m(W−1)。恢复窗口时还要按目标缓存条目展开依赖；具体边界取决于缓存约定。这是有限依赖的推导，不是任意混合模型的通用 replay 长度。前半部分若含 full attention，局部 token 的精确重建还可能需要保留的全局历史 KV。</p>
+<h2 id="section-5">5. 显存：减少了全局 KV，也改变了检查点的相对成本</h2>
+<p>设全局 KV 每 token 占 g 字节，序列长度为 N，所有循环层的一个完整检查点共占 S 字节。忽略碎片、权重和临时激活：</p>
+<table>
+<thead>
+<tr>
+<th>结构</th>
+<th>活跃请求所需缓存</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>L 层普通 full attention，假设各层 KV 大小相同</td>
+<td>L × N × g</td>
+</tr>
+<tr>
+<td>原版 YOCO-gRet</td>
+<td>N × g + S</td>
+</tr>
+<tr>
+<td>原版 YOCO-SWA</td>
+<td>N × g + 所有 Self 层的窗口 KV</td>
+</tr>
+</tbody></table>
+<p>这是从存储对象逐项计数的结果。g = 2 × KV head 数 × head 维度 × 每元素字节数；gRet 状态则应按矩阵形状计费，不能直接当作一个 token 的 K/V。</p>
+<div class="callout"><strong>对 prefix caching 的关键推导：</strong>活跃请求只需一份当前状态；想在很多历史边界恢复，就需要很多状态快照。每隔 I 个 token 保存一次检查点，历史状态总量约为 (N/I)S，而不是 S。</div>
+
+<p>一个完全用于说明量级的例子，不是某款已发布模型的配置：</p>
+<table>
+<thead>
+<tr>
+<th>参数 / 对象</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>共享全局 KV：8 个 KV head，head dim 128，BF16</td>
+<td>4 KiB / token</td>
+</tr>
+<tr>
+<td>16 个循环层，每层 16 head，128×128 矩阵，FP32</td>
+<td>一个完整检查点 16 MiB</td>
+</tr>
+<tr>
+<td>N = 65,536，只有共享全局 KV</td>
+<td>256 MiB</td>
+</tr>
+<tr>
+<td>同一前缀每 1,024 token 一个检查点</td>
+<td>64 × 16 MiB = 1 GiB</td>
+</tr>
+<tr>
+<td>同一前缀每 256 token 一个检查点</td>
+<td>256 × 16 MiB = 4 GiB</td>
+</tr>
+</tbody></table>
+<p>在这个例子中，I = 4,096 时，全部历史检查点的总量就已等于共享全局 KV 的总量。分叉和跨请求去重会改变实际数量，但不改变检查点密度需要单独核算的事实。</p>
+<p>若分配器还要求一份大状态和一个 KV block 使用相同物理分配单位，也可能迫使 token block 变粗或产生填充。YOCO 本身不会解决这个分配约束；它只是改变各类对象的数量与比例。此处是分配器设计层面的推导，不代表原版 YOCO 已被某个 vLLM Mamba allocator 原生支持。</p>
+<h2 id="section-6">6. 前缀复用：需要“全局历史”与“续算状态”两样东西</h2>
+<p>定义 G<sub>1:p</sub> 为前缀 1…p 的完整共享全局 KV，C<sub>p</sub> 为原版 YOCO 前半部分在 p 的完整恢复状态包。先假设新请求在 p 后还有新 token：</p>
+<table>
+<thead>
+<tr>
+<th>保留了什么</th>
+<th>能否直接从 p 后继续</th>
+<th>合法的恢复方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>G<sub>1:p</sub> + C<sub>p</sub></td>
+<td>可以</td>
+<td>共享全局 KV，恢复状态，计算新后缀</td>
+</tr>
+<tr>
+<td>G<sub>1:p</sub> + C<sub>q</sub>，q &lt; p</td>
+<td>不可直接续算</td>
+<td>从 q 重放前半部分到 p，再计算后缀</td>
+</tr>
+<tr>
+<td>G<sub>1:p</sub>，没有可用循环检查点</td>
+<td>不可直接续算</td>
+<td>gRet 从初始状态重放前半部分；纯 SWA 可展开有限依赖</td>
+</tr>
+<tr>
+<td>C<sub>p</sub>，但较早全局 KV 有洞</td>
+<td>不足以完成未来全局读取</td>
+<td>从洞前的合法状态重建缺失 KV，或加载旧 KV</td>
+</tr>
+<tr>
+<td>只有比 p 更晚、且已混入另一分支的检查点</td>
+<td>不能用它恢复 p</td>
+<td>寻找更早检查点或重新初始化</td>
+</tr>
+</tbody></table>
+<p>这回答了“checkpoint 有、KV 没有是否可能”：<strong>架构上可能，而且二者信息并不互相包含。</strong>某个缓存管理策略可以主动禁止这种驻留组合，但那是策略约束。对于原版 YOCO，前半部分的更新不依赖后半部分的全局读取，因此保存循环状态而淘汰部分全局 KV 是一种可表达的状态。</p>
+<p>同样，“全局 KV 命中但循环状态丢失”不意味着这些 KV 在数学上无效，只意味着需要先修复续算条件。修复后仍可把它们交给 cross-decoder 使用。</p>
+<p>如果整个 prompt 都命中且没有新后缀，还需要产生最后位置的 logits。单靠 KV 与结束状态不一定提供最后位置的当前 hidden state；可以额外缓存它，或像常见引擎那样保留最后一个 token 的重算。下面的例子始终带非空新后缀，避免混淆这个边界。</p>
+<h2 id="section-7">7. 一个贯穿例子：命中到 12，不等于省掉 12 个 token 的计算</h2>
+<p>旧请求处理了 x<sub>1</sub>…x<sub>12</sub>。新请求为相同前缀加上 x<sub>13</sub>、x<sub>14</sub>。缓存中 G<sub>1:12</sub> 都在，但只剩 C<sub>4</sub>。</p>
+<ol class="steps">
+<li><strong>恢复 C₄。</strong>各 Self 层回到相同前缀边界。</li>
+<li><strong>前半部分重放 x₅…x₁₂。</strong>重建 C₁₂；已有全局 KV 可以保持不动，省去重复投影 / 写入。这个阶段不需要旧 token 的 cross-decoder 计算。</li>
+<li><strong>前半部分处理 x₁₃、x₁₄。</strong>更新状态并追加两位置的全局 KV。</li>
+<li><strong>后半部分处理 x₁₄。</strong>读取完整共享历史，预测 x₁₅。这里只讨论普通生成，不要求 prompt logprob。</li>
+</ol>
+
+<p>与完全未命中的、已经启用 YOCO 快 prefill 的基线比较：基线需要前半部分计算 1…14，恢复方案需要重放 5…12 并计算 13、14。主干前半计算只省掉了 1…4，另有历史全局 KV 投影和写入等收益。</p>
+<p>若 C<sub>4</sub> 也没有了，gRet 需要从头重建状态。此时即使全局 KV token 命中率是 100%，仍可能重算几乎全部前半部分，实际收益要测量。<strong>全局 KV 命中率、直接可恢复前缀长度、实际跳过的执行量是三个不同指标。</strong></p>
+<p>还可以进一步沿算子依赖裁剪：若仅恢复循环矩阵、不需要重新产生某些旧 token 的全局 KV，顶端 Self 层的部分 readout / FFN 可能无需执行。这是从状态更新依赖推导的优化方向，尚未作为真实实现验证，也不据此声称新颖性。</p>
+<h2 id="section-8">8. 为什么原版 YOCO 的恢复与交错混合模型不一样？</h2>
+<p>原版 YOCO 的前半部分仅含有界状态的 token mixer，后半部分只消费共享全局 KV。因此恢复前半部分时，不必执行后半部分，也不必读取后半部分的全局 KV。</p>
+<p>对于 full attention 与 recurrent 层交错的模型，更深 recurrent 层的输入可能经过 full attention；精确重放时仍需要相应的历史 attention 依赖。两种结构都能谈“重放”，但运行的子图、历史读取量和成本不同。</p>
+<p>对于 Gemma、DeepSeek 等 YOCO 相关变体，则必须重新检查哪些层拥有自己的持久状态、共享的是 hidden state 还是物理 KV、消费者是否有额外 SWA。不能只看名字就套用原版的复杂度或恢复合同。</p>
+<h2 id="section-9">9. 驱逐与分配：真正要管理的是哪些对象？</h2>
+<table>
+<thead>
+<tr>
+<th>对象</th>
+<th>存储与访问特点</th>
+<th>驱逐后的后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>全局 KV block</td>
+<td>一个物理 owner 可有多个消费层，还可被多请求共享</td>
+<td>后续全局读取需要先补洞或加载</td>
+</tr>
+<tr>
+<td>循环检查点</td>
+<td>表示一个前缀边界；一次恢复只需一个完整状态包</td>
+<td>增加状态重放距离，不一定使全局 KV 失效</td>
+</tr>
+<tr>
+<td>SWA 窗口状态</td>
+<td>每层有界；可能保存、精确重建或采用近似重放</td>
+<td>由具体恢复规则决定可复用性</td>
+</tr>
+<tr>
+<td>当前活跃状态</td>
+<td>不断更新；分支开始时需保留正确快照</td>
+<td>不能误覆盖其他请求 / 分支仍使用的状态</td>
+</tr>
+</tbody></table>
+<p>由这些依赖可以推出几个系统要求：</p>
+<ul>
+<li><strong>按物理 owner 计费。</strong>十个层引用同一 KV，不应计成十份显存，也不应以“逐层驱逐”删除同一个底层对象。多个请求的共享引用同样要管理。</li>
+<li><strong>状态与全局 KV 分开记录驻留。</strong>统一 token 前缀身份，不意味着所有缓存对象必须绑定为一个不可拆的物理包。</li>
+<li><strong>驱逐价值取决于恢复计划。</strong>丢一个中间检查点可能只增加少量前半重放；丢早期全局块可能影响大量后续读取。反过来，便宜可重建的 KV 也未必总值得保留。</li>
+<li><strong>区分活跃状态和历史快照。</strong>循环状态通常原地更新；两个分支从同一 checkpoint 开始后，要有独立工作状态或写时复制。</li>
+<li><strong>维护复用身份。</strong>模型权重、适配器、位置 / 掩码语义、KV 表示格式等必须兼容；相同 token 块出现在不同前文后，通常不能仅凭块内 token 复用。</li>
+</ul>
+<p>一个可评估的恢复选择不是“命中 / 没命中”两档，而是：直接恢复、从较早检查点精确重放、加载异地状态、重建 KV 缺口，以及在模型明确支持时选择近似恢复。成本应计入传输、状态复制、重放算子、最终 attention 读取和实际批处理形状。</p>
+<h2 id="section-10">10. vLLM：已支持什么，以及没有证明什么？</h2>
+<p>“2024 年已经在 vLLM 上有”需要拆开理解：2024 是 YOCO 原论文年份；本次核实到的 V1 通用跨层共享和模型快 prefill 合并记录集中在 2025 年及以后。研究用实现、某个模型支持、原版 YOCO 原生支持、以及 prefix caching 完整支持，不是同一个声明。</p>
+<table>
+<thead>
+<tr>
+<th>事件</th>
+<th>核实结果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>通用跨层 KV 共享 PR #18212</td>
+<td>2025-06-03 合并；消费者引用更早层的缓存</td>
+</tr>
+<tr>
+<td>Gemma3n 快 prefill PR #22628</td>
+<td>2025-08-28 合并</td>
+</tr>
+<tr>
+<td>Gemma4 快 prefill PR #38879</td>
+<td>2026-04-06 合并</td>
+</tr>
+<tr>
+<td>本文检查代码基线</td>
+<td>vLLM v0.30.0，而不是用不断变化的 main 替代</td>
+</tr>
+</tbody></table>
+<p><a class="ref" href="#s7">[7]</a> <a class="ref" href="#s8">[8]</a> <a class="ref" href="#s9">[9]</a></p>
+<p>v0.30.0 中三处代码把机制说得很清楚：</p>
+<ol>
+<li>Attention 层通过 <code>kv_sharing_target_layer_name</code> 指定缓存 owner。</li>
+<li>GPUModelRunner.get_kv_cache_spec() 对消费层跳过独立 KVCacheSpec；initialize_kv_cache_tensors() 让消费层的缓存引用指向 owner 张量。</li>
+<li>Gemma3n 的共享层只产生 Q，K/V 交给目标层提供；开启快 prefill 时，模型另外选择需要 logits 的位置进入 cross-decoder。<a class="ref" href="#s10">[10]</a> <a class="ref" href="#s11">[11]</a></li>
+</ol>
+<p>下面两行来自不同位置，用于说明实际的别名与读取方式：</p>
+<pre><code>kv_caches[layer_name] = kv_caches[target_layer_name]
+attn_output = self.attn(q, None, None)
+</code></pre>
+<p><code>--kv-sharing-fast-prefill</code> 控制的是被模型实现接入的快 prefill 路径，<code>--enable-prefix-caching</code> 控制跨请求复用。两者分开评估，不能把打开前一个开关当成“任意模型自动变 YOCO”。v0.30.0 的 runner 对快 prefill 与 prompt logprob 的组合有明确限制。旧文档中“仍无 prefill 收益”的描述也不能覆盖后来已合并的模型实现。<a class="ref" href="#s10">[10]</a> <a class="ref" href="#s12">[12]</a></p>
+<p>另外，Phi4FlashForCausalLM 在 v0.30.0 注册表中属于 previously supported，记录的最后支持版本是 0.10.2；相关 V1 移植议题和恢复 PR 仍需按实际状态判断。不能因为 2025 年论文用过 vLLM，就认为你现在的 v0.30.0 可以直接运行该模型。<a class="ref" href="#s13">[13]</a> <a class="ref" href="#s14">[14]</a></p>
+<h2 id="section-11">11. 大厂采用：公开证据已经不止“正在看”</h2>
+<table>
+<thead>
+<tr>
+<th>公开模型 / 工作</th>
+<th>已确认的相关设计</th>
+<th>对缓存研究的区别</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Microsoft YOCO / SambaY / Phi-4-mini-flash-reasoning</td>
+<td>SambaY 在 YOCO 路线上结合 Mamba、SWA 和跨层 memory readout；GMU 替换一部分昂贵的 cross attention</td>
+<td>可能同时有全局 KV、循环状态和窗口 KV；GMU 不等于另存一份全局 KV</td>
+</tr>
+<tr>
+<td>Google Gemma3n</td>
+<td>官方介绍 local/global KV 共享；vLLM 实现把共享层接到较早的同类型层</td>
+<td>前半部分含自身的 attention，不能套原版纯有界 mixer 的全部性质</td>
+</tr>
+<tr>
+<td>Google Gemma4 的 KV-sharing 配置</td>
+<td>vLLM 有独立快 prefill 路径</td>
+<td>必须以实际配置的 shared layer 数和类型计费</td>
+</tr>
+<tr>
+<td>DeepSeek-V4.1-Flash</td>
+<td>CED 前后分段；后半全局缓存投影自 encoder 输出，并有 CSA2 多种跨层复用</td>
+<td>后半还有 SWA 恢复问题，采用有界近似 replay</td>
+</tr>
+<tr>
+<td>Mistral Large 4</td>
+<td>Transformers 文档明确：从层 39 起每隔四层的消费者读取层 35 的 latent KV</td>
+<td>只共享一部分层；其余层仍有自身依赖，不能据此跳过完整后半模型</td>
+</tr>
+</tbody></table>
+<p><a class="ref" href="#s15">[15]</a> <a class="ref" href="#s16">[16]</a> <a class="ref" href="#s9">[9]</a> <a class="ref" href="#s17">[17]</a> <a class="ref" href="#s19">[19]</a></p>
+<p>这些案例支持“跨层共享已被多家团队采用”，但不支持“未来模型都会采用原版 YOCO”。跨层表示共享牺牲了部分独立表示能力，需要训练配合；不能直接把现有普通 Transformer 的逐层 KV 合并而保持原模型函数不变。SwiftKV 等工作则明确研究了通过模型变换与蒸馏适配现有模型的另一条路线。<a class="ref" href="#s20">[20]</a></p>
+<h3>DeepSeek 的 128-token replay 必须单独理解</h3>
+<p>DeepSeek-V4.1-Flash 模型卡给出 20 层 causal encoder + 20 层 decoder 的 CED 结构。DeepInfer 的部署说明进一步公开：encoder SWA 状态缺失时重放近期窗口；decoder SWA 则用 prompt 尾部重放恢复，其结果用于后续 decode，不进入 prefix cache。<a class="ref" href="#s17">[17]</a> <a class="ref" href="#s18">[18]</a></p>
+<p>文档明确把 128-token SWA bounded replay 生成的窗口称为近似状态，并说明 20 层 decoder 的完整依赖恢复需要更长的约 2,560-token 区域。这里的 2,560 是该实现给出的量级，不能替代任意模型的依赖计算。</p>
+<p>这有两个研究含义：第一，“SWA 缺失但全局 KV 存在”的修复路径已经有生产公开实例，不能再笼统说成现有方案都无法使用。第二，你若保持精确复用目标，就要把精确状态恢复和近似窗口重放作为不同语义的基线，分别报告性能和质量。</p>
+<h2 id="section-12">12. 对当前课题，更有价值的切入点是什么？</h2>
+<p>我的判断是：<strong>YOCO 使“恢复计算的子图”成为混合缓存管理必须理解的一部分。</strong>只统计缓存类型与驻留字节，无法判断一个不完整命中到底值多少钱。</p>
+<p>一个更具体的系统问题可以表述为：</p>
+<blockquote>在同时存在跨层 KV 共享、循环状态和窗口状态的模型中，运行时如何识别合法恢复路径，并在存储、加载与重放之间选择代价合适的方案，使残缺的前缀缓存仍能产生可衡量的收益？</blockquote>
+
+<p>这不是直接给出一个已证明的新论文方向。已有工作边界相当重要：</p>
+<ul>
+<li>Marconi 与 Sparse Prefix Caching 已研究混合模型缓存与检查点问题；仅改变 checkpoint 间隔或淘汰评分，很难单独构成完整新故事。</li>
+<li><strong>HiState 于 2026-10-30 发布预印本</strong>，已经覆盖检查点跨层级保存、自适应间隔与协调驱逐，并在 vLLM 上评估 agent traces。分层保存检查点本身不能当作空白。<a class="ref" href="#s21">[21]</a></li>
+<li>DeepSeek 的 bounded replay 已覆盖一类缺失 SWA 的近似修复。新的系统需要说明所支持的拓扑、精确性合同、代价模型和执行范围有什么实质区别。</li>
+</ul>
+<p>最值得先做的三个实验，保持一个 GPU、短运行时间即可：</p>
+<table>
+<thead>
+<tr>
+<th>实验</th>
+<th>控制什么</th>
+<th>想回答什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>状态缺失 / KV 缺口微实验</td>
+<td>固定相同 token 前缀，分别删除 checkpoint、窗口和全局块</td>
+<td>哪些缺失组合能精确修复？必须执行哪些层与算子？</td>
+</tr>
+<tr>
+<td>固定总显存的 checkpoint 密度扫描</td>
+<td>固定总缓存预算，而不是额外赠送状态空间</td>
+<td>更密检查点节省多少 replay，又挤出多少可复用 KV？</td>
+</tr>
+<tr>
+<td>命中率与实际收益解耦实验</td>
+<td>比较直接恢复、较早检查点重放、已有快 prefill 的未命中基线</td>
+<td>高 KV 命中是否真的省了主干计算、降低了 TTFT？</td>
+</tr>
+</tbody></table>
+<p>记录全局 KV token 命中率、直接状态命中边界、实际重放 token / 层 / FLOPs、每类对象的常驻量、传输与复制成本，以及 p50/p95/p99 TTFT。近似恢复另测质量。硬件成本最终由真实 kernel 和调度测量，不把 FLOPs 自动等同于延迟。</p>
+<p>若沿用 vLLM v0.30.0，Gemma3n / Gemma4 的小尺寸 KV-sharing 配置可用于验证跨层别名、SWA 和快 prefill；原版 gRet 的循环恢复仍需对应实现接入。不要把一种模型的结果直接解释成所有 YOCO 变体的结果。</p>
+<h2 id="section-13">13. 论文效果应该如何读？</h2>
+<p>原论文用 3B 主实验、不同规模的训练曲线和百万上下文检索等结果支撑可行性，并报告长上下文 prefill 的显著收益。这些是特定模型与实现下的结果，不是 prefix caching 在真实 agent 负载中的端到端收益。<a class="ref" href="#s1">[1]</a></p>
+<p>评估时尤其要记住：低缓存容量、低 decode 带宽、低 prefill 时间、模型质量是不同维度。YOCO 主要减少历史表示的存储冗余，并允许裁掉不需要的 prompt 计算；它仍保留多层读取历史的开销，也需要训练适应共享表示。SambaY 正是在减少 decoder 的昂贵历史读取这一方向继续改造。<a class="ref" href="#s15">[15]</a></p>
+<h2 id="section-14">14. 小型数值核验与范围</h2>
+<p>构造了两层 gated recurrence 生产端、两层无独立历史状态的 cross attention，以及另一个两层窗口为 3 的 SWA 小模型。它们不是训练后的 YOCO，也没有测量 GPU 性能。</p>
+<table>
+<thead>
+<tr>
+<th>核验</th>
+<th>CPU float64 结果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>全量执行所有 prompt 的 cross 部分 vs 只执行最后位置</td>
+<td>最后输出最大绝对误差 0</td>
+</tr>
+<tr>
+<td>从较早检查点重放到目标边界 vs 原来的状态</td>
+<td>最大绝对误差 0</td>
+</tr>
+<tr>
+<td>恢复后继续处理相同后缀 vs 原始完整执行</td>
+<td>最后输出最大绝对误差 0</td>
+</tr>
+<tr>
+<td>gRet 重置后仅重放最近 3 token</td>
+<td>最后输出误差约 0.00771，说明不能一般地当作精确恢复</td>
+</tr>
+<tr>
+<td>两层 SWA，只重放最后 3 token</td>
+<td>目标位置输出误差约 0.03064</td>
+</tr>
+<tr>
+<td>相同 SWA，重放完整 5-token 依赖区域</td>
+<td>目标位置输出误差 0</td>
+</tr>
+</tbody></table>
+<p>这些数值是机制检查，不是理论证明或真实模型的质量结果。可在文末展开完整脚本复现。</p>
+<h2 id="section-15">15. 一手来源与源码入口</h2>
+<ol class="sources">
+<li id="s1"><a href="https://arxiv.org/html/2405.05254v1">YOCO 原论文</a>：§2 架构，§3 两种 Self mixer，§4 实验。</li>
+<li id="s2"><a href="https://github.com/microsoft/unilm/blob/master/YOCO/yoco/models/decoder/yoco.py">原版 yoco.py</a>：SelfDecoder、CrossDecoder、共享投影和 skip_cross_decoder。</li>
+<li id="s3"><a href="https://github.com/microsoft/unilm/blob/master/YOCO/yoco/models/decoder/gate_retention.py">gate_retention.py</a>：逐层循环状态及 chunk/recurrent 路径。</li>
+<li id="s4"><a href="https://github.com/microsoft/unilm/blob/master/YOCO/yoco/models/decoder/sliding_window_attention.py">sliding_window_attention.py</a>：有界窗口缓存与掩码。</li>
+<li id="s5"><a href="https://github.com/microsoft/unilm/blob/master/YOCO/yoco/criterions/needle_haystack.py#L126">原版生成循环</a>：先 prefill 前 N−1，再完整处理最后一个 prompt token。</li>
+<li id="s6"><a href="https://arxiv.org/abs/2405.12981">Cross-Layer Attention</a>：相邻层共享 KV 的架构工作。</li>
+<li id="s7"><a href="https://github.com/vllm-project/vllm/pull/18212">vLLM PR #18212</a>：V1 通用跨层 KV 共享。</li>
+<li id="s8"><a href="https://github.com/vllm-project/vllm/pull/22628">vLLM PR #22628</a>：Gemma3n 快 prefill、分开编译和 attention metadata。</li>
+<li id="s9"><a href="https://github.com/vllm-project/vllm/pull/38879">vLLM PR #38879</a>：Gemma4 快 prefill；PR 数据来自 B200，不是 A800 结果。</li>
+<li id="s10"><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/v1/worker/gpu_model_runner.py#L7558">v0.30.0 GPUModelRunner</a>：get_kv_cache_spec、initialize_kv_cache_tensors、快 prefill metadata。</li>
+<li id="s11"><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/model_executor/models/gemma3n.py#L419">v0.30.0 Gemma3n</a>：共享层只投影 Q；fast_prefill_forward。</li>
+<li id="s12"><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/config/cache.py#L221">v0.30.0 CacheConfig</a>：kv_sharing_fast_prefill 默认关闭。</li>
+<li id="s13"><a href="https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/model_executor/models/registry.py#L793">v0.30.0 模型注册表</a>：Phi4Flash 在 previously supported 列表。</li>
+<li id="s14"><a href="https://github.com/vllm-project/vllm/issues/23957">Phi4Flash V1 支持议题 #23957</a>；<a href="https://github.com/vllm-project/vllm/pull/44963">恢复支持 PR #44963</a>（检查时未合并）。</li>
+<li id="s15"><a href="https://arxiv.org/html/2507.06607v1">SambaY / Phi4-mini-Flash-Reasoning 论文</a>；<a href="https://azure.microsoft.com/en-us/blog/reasoning-reimagined-introducing-phi-4-mini-flash-reasoning/">Microsoft 官方介绍</a>。</li>
+<li id="s16"><a href="https://developers.googleblog.com/introducing-gemma-3n-developer-guide/">Google Gemma3n developer guide</a>：local/global KV cache sharing。</li>
+<li id="s17"><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash">DeepSeek-V4.1-Flash 官方模型卡</a>：CED、CSA2 与 SWA bounded replay。</li>
+<li id="s18"><a href="https://github.com/deepseek-ai/DeepInfer/blob/main/doc/inference_deployment_qa.md">DeepInfer 部署 Q&amp;A</a>：SWA 保存与近似重放；<a href="https://github.com/deepseek-ai/DeepInfer/blob/main/deepinfer/model_executor/models/v4_modules/yoco.py">YOCO 运行时</a>。</li>
+<li id="s19"><a href="https://huggingface.co/docs/transformers/model_doc/mistral_large4">Transformers 的 Mistral Large 4 实现文档</a>：部分层共享层 35 的 latent KV。</li>
+<li id="s20"><a href="https://arxiv.org/abs/2410.03960">SwiftKV</a>：面向现有模型的变换、共享与蒸馏路线。</li>
+<li id="s21"><a href="https://arxiv.org/abs/2610.41508">HiState</a>：2026-10-30 预印本；检查点分层、自适应间隔和统一驱逐。本文仅将其作为已公开近作，不背书其全部实验结论。</li>
+<li id="s22"><a href="https://arxiv.org/abs/2605.05219">Sparse Prefix Caching for Hybrid and Recurrent LLM Serving</a>：精确检查点与重放的相关工作。</li>
+</ol>
+
+<p class="small">版本记录：vLLM 以 v0.30.0 tag 阅读；Microsoft 参考 yoco.py blob 为 6fb0d01e8b7b088f7f81db0a969038bb23d88b64；DeepInfer Q&amp;A 与模型卡是 2026-11-05 读取的动态页面。所有推导都按文中明确的架构假设使用。</p>
+<details class="appendix"><summary>展开：可复制运行的 CPU 机制核验脚本</summary><p>依赖 Python 3 与 NumPy。保存为 yoco_mechanism_check.py 后运行 python3 yoco_mechanism_check.py。</p><pre><code>&quot;&quot;&quot;Small numerical checks of YOCO dependencies, not a trained-model benchmark.&quot;&quot;&quot;
+import copy
+import json
+import numpy as np
+
+rng = np.random.default_rng(7)
+dim = 6
+layers = 2
+self_weights = [tuple(rng.normal(scale=0.18, size=(dim, dim)) for _ in range(4)) for _ in range(layers)]
+cross_weights = [tuple(rng.normal(scale=0.18, size=(dim, dim)) for _ in range(3)) for _ in range(layers)]
+wk, wv = (rng.normal(scale=0.18, size=(dim, dim)) for _ in range(2))
+tokens = rng.normal(scale=0.5, size=(18, dim))
+
+def produce(x, states):
+    x = x.copy()
+    next_states = []
+    for old, (q, k, v, o) in zip(states, self_weights):
+        state = 0.91 * old + np.outer(x @ k, x @ v)
+        x = np.tanh(x + (x @ q) @ state @ o)
+        next_states.append(state)
+    return x, next_states, x @ wk, x @ wv
+
+def consume(x, keys, values):
+    for q, o, ff in cross_weights:
+        scores = keys @ (x @ q) / np.sqrt(dim)
+        probs = np.exp(scores - scores.max())
+        probs /= probs.sum()
+        x = np.tanh(x + probs @ values @ o)
+        x = x + np.tanh(x @ ff)
+    return x
+
+def run(xs, states=None, keys=None, values=None, all_queries=False):
+    states = [np.zeros((dim, dim)) for _ in range(layers)] if states is None else copy.deepcopy(states)
+    keys = [] if keys is None else [x.copy() for x in keys]
+    values = [] if values is None else [x.copy() for x in values]
+    history = []
+    for i, tok in enumerate(xs):
+        x, states, k, v = produce(tok, states)
+        keys.append(k)
+        values.append(v)
+        if all_queries or i == len(xs) - 1:
+            answer = consume(x, np.asarray(keys), np.asarray(values))
+        history.append((copy.deepcopy(states), [x.copy() for x in keys], [x.copy() for x in values]))
+    return answer, history
+
+full, history = run(tokens, all_queries=True)
+fast, _ = run(tokens, all_queries=False)
+c, p = 5, 13
+states_c, _, _ = history[c - 1]
+states_p, keys_p, values_p = history[p - 1]
+_, replay = run(tokens[c:p], states_c)
+replayed_states = replay[-1][0]
+continued, _ = run(tokens[p:], replayed_states, keys_p, values_p)
+_, short_replay = run(tokens[p - 3:p])
+wrong_continued, _ = run(tokens[p:], short_replay[-1][0], keys_p, values_p)
+
+def swa_stack(xs, window=3):
+    x = np.asarray(xs, dtype=np.float64)
+    for layer in range(2):
+        y = []
+        for i in range(len(x)):
+            a = x[max(0, i - window + 1):i + 1]
+            scores = a * x[i] * (0.3 + layer * 0.1)
+            probs = np.exp(scores - scores.max())
+            probs /= probs.sum()
+            y.append(np.tanh(x[i] + probs @ a))
+        x = np.asarray(y)
+    return x
+
+xs = np.asarray([0.2, -0.7, 0.3, 0.8, -0.4, 0.6, -0.9, 0.1])
+target = swa_stack(xs)[-1]
+result = {
+    &quot;scope&quot;: &quot;synthetic CPU mechanism checks; no real YOCO weights or performance measurements&quot;,
+    &quot;prefill_skip_max_abs_error&quot;: float(np.max(np.abs(full - fast))),
+    &quot;checkpoint_replay_state_max_abs_error&quot;: float(max(np.max(np.abs(a - b)) for a, b in zip(states_p, replayed_states))),
+    &quot;checkpoint_replay_last_output_max_abs_error&quot;: float(np.max(np.abs(full - continued))),
+    &quot;gated_recurrence_reset_and_replay_only_3_tokens_output_error&quot;: float(np.max(np.abs(full - wrong_continued))),
+    &quot;swa_2_layers_window_3_replay_3_tokens_last_output_error&quot;: float(abs(swa_stack(xs[-3:])[-1] - target)),
+    &quot;swa_2_layers_window_3_replay_5_tokens_last_output_error&quot;: float(abs(swa_stack(xs[-5:])[-1] - target)),
+    &quot;illustrative_memory&quot;: {
+        &quot;global_kv_bytes_per_token&quot;: 2 * 8 * 128 * 2,
+        &quot;checkpoint_bundle_bytes&quot;: 16 * 16 * 128 * 128 * 4,
+        &quot;global_kv_at_65536_tokens_bytes&quot;: 65536 * 2 * 8 * 128 * 2,
+        &quot;checkpoint_bytes_at_interval_256&quot;: (65536 // 256) * 16 * 16 * 128 * 128 * 4,
+    },
+}
+assert result[&quot;prefill_skip_max_abs_error&quot;] == 0
+assert result[&quot;checkpoint_replay_state_max_abs_error&quot;] == 0
+assert result[&quot;checkpoint_replay_last_output_max_abs_error&quot;] == 0
+assert result[&quot;gated_recurrence_reset_and_replay_only_3_tokens_output_error&quot;] &gt; 1e-8
+assert result[&quot;swa_2_layers_window_3_replay_3_tokens_last_output_error&quot;] &gt; 1e-8
+assert result[&quot;swa_2_layers_window_3_replay_5_tokens_last_output_error&quot;] == 0
+print(json.dumps(result, ensure_ascii=False, indent=2))
+</code></pre></details><details class="appendix"><summary>展开：本次实际运行结果</summary><pre><code>{
+  &quot;scope&quot;: &quot;synthetic CPU mechanism checks; no real YOCO weights or performance measurements&quot;,
+  &quot;prefill_skip_max_abs_error&quot;: 0.0,
+  &quot;checkpoint_replay_state_max_abs_error&quot;: 0.0,
+  &quot;checkpoint_replay_last_output_max_abs_error&quot;: 0.0,
+  &quot;gated_recurrence_reset_and_replay_only_3_tokens_output_error&quot;: 0.00771304414345797,
+  &quot;swa_2_layers_window_3_replay_3_tokens_last_output_error&quot;: 0.030644808777320634,
+  &quot;swa_2_layers_window_3_replay_5_tokens_last_output_error&quot;: 0.0,
+  &quot;illustrative_memory&quot;: {
+    &quot;global_kv_bytes_per_token&quot;: 4096,
+    &quot;checkpoint_bundle_bytes&quot;: 16777216,
+    &quot;global_kv_at_65536_tokens_bytes&quot;: 268435456,
+    &quot;checkpoint_bytes_at_interval_256&quot;: 4294967296
+  }
+}
+</code></pre></details><p class="footer">研究范围：公开论文与实现核对、依赖推导、CPU 数值检查。本文没有声称完成真实模型或 A800 的性能评估。</p></main></div></body></html>
