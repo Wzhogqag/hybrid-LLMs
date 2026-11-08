@@ -20,6 +20,8 @@ Hybrid LLM 推理系统研究资料库，整理 **Prefix Caching、FA / SWA / SS
 
 | 08 | 2026-11-04 | [DeepSeek：混合缓存全恢复点与容量对照](https://wzhogqag.github.io/hybrid-LLMs/deepseek-hybrid-cache-recovery-points-capacity-2026-11-04.html) | DeepSeek Hybrid Cache 的 CPU 管理层模拟：对比不同会话数与每 rank 30/60GB 容量下的前缀联合复用、G2 连续命中及局部状态缺口；交互式查看 256-token 对齐的 G0/G1(SWA)、G3/G4 压缩状态与现存/已驱逐恢复点，并检查内存覆盖压力。非真实 GPU 性能测量。 | [`deepseek-hybrid-cache-recovery-points-capacity-2026-11-04.html`](./deepseek-hybrid-cache-recovery-points-capacity-2026-11-04.html) |
 
+| 09 | 2026-11-08 | [DeepSeek：G2 命中但联合复用为 0 的四类原因](https://wzhogqag.github.io/hybrid-LLMs/deepseek-zero-joint-reuse-causes-2026-11-05.html) | 32 会话、每 rank 30GB 的 CPU 缓存管理模拟；分类追踪 236 个 G2 仍命中但联合复用为 0 的首查（G0 先被回收 225、G3 先被回收 3、匹配恢复点未登记 8），另列 67 个 G2 也缺失的对照。提供典型请求的恢复点位置、逐事件驱逐链、物理块及检查点来源证据。 | [`deepseek-zero-joint-reuse-causes-2026-11-05.html`](./deepseek-zero-joint-reuse-causes-2026-11-05.html) |
+
 ## 在线阅读
 
 - **GitHub Pages 首页**：https://wzhogqag.github.io/hybrid-LLMs/（当前为 Marconi 机制介绍）。
