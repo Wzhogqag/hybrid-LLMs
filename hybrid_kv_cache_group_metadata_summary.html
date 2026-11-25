@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hybrid KV Cache 分组管理与 Metadata 开销：阶段性结论</title>
+<style>
+:root{
+  --bg:#f4f6fa;--paper:#fff;--ink:#172033;--muted:#5e6b80;--line:#e4e9f1;
+  --blue:#2457c5;--blue-soft:#edf3ff;--teal:#087e78;--teal-soft:#e9f7f5;
+  --amber:#9a5a05;--amber-soft:#fff5e5;--red:#a63838;--red-soft:#fff0ef;
+  --shadow:0 12px 34px rgba(27,43,75,.07);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.72 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+.wrap{max-width:1100px;margin:auto;padding:34px 24px 70px}
+.hero{background:linear-gradient(135deg,#14284d,#244f9e 65%,#287d91);color:#fff;border-radius:22px;padding:48px 52px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.hero:after{content:"";position:absolute;width:330px;height:330px;border:1px solid #ffffff25;border-radius:50%;right:-80px;top:-130px;box-shadow:0 0 0 36px #ffffff0b,0 0 0 74px #ffffff08}
+.eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#c8d8ff;font-weight:700}
+h1{font-size:clamp(30px,4vw,43px);line-height:1.2;margin:14px 0 16px;max-width:800px}
+.hero p{color:#e2eaff;max-width:760px;margin:0;font-size:17px}
+.meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:24px}
+.pill{font-size:12px;padding:5px 10px;border:1px solid #ffffff55;border-radius:99px;color:#edf3ff}
+.toc{margin:24px 0;background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:20px 24px;box-shadow:var(--shadow)}
+.toc strong{display:block;margin-bottom:8px}
+.toc ol{margin:0;padding-left:22px;columns:2;column-gap:40px}
+.toc li{break-inside:avoid;margin:3px 0;color:var(--muted)}
+section{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:30px 34px;margin:22px 0;box-shadow:var(--shadow)}
+h2{font-size:25px;line-height:1.3;margin:0 0 18px;letter-spacing:-.02em}
+h3{font-size:18px;margin:26px 0 10px}
+p{margin:10px 0}
+.lead{font-size:18px;color:#263650}
+.callout{border-left:4px solid var(--blue);background:var(--blue-soft);padding:15px 18px;border-radius:0 12px 12px 0;margin:18px 0}
+.callout.teal{border-color:var(--teal);background:var(--teal-soft)}
+.callout.amber{border-color:#d28a20;background:var(--amber-soft)}
+.callout.red{border-color:#c75b56;background:var(--red-soft)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:16px 0}
+.card{border:1px solid var(--line);border-radius:14px;padding:17px 18px;background:#fff}
+.card h3{margin:0 0 7px;font-size:16px}
+.card p{margin:0;color:var(--muted);font-size:14px}
+.kicker{font-size:12px;font-weight:700;letter-spacing:.06em;color:var(--blue);text-transform:uppercase}
+.flow{display:flex;align-items:stretch;gap:9px;margin:18px 0;flex-wrap:wrap}
+.flow .node{flex:1;min-width:130px;border:1px solid var(--line);border-radius:12px;padding:14px;text-align:center;background:#fbfcff}
+.node b{display:block;font-size:15px}
+.node small{display:block;color:var(--muted);margin-top:4px;font-size:12px}
+.arrow{align-self:center;color:#8290a5;font-size:21px}
+.tag{display:inline-block;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:700;margin-right:5px}
+.tag.green{background:var(--teal-soft);color:var(--teal)}
+.tag.orange{background:var(--amber-soft);color:var(--amber)}
+.tag.red{background:var(--red-soft);color:var(--red)}
+table{width:100%;border-collapse:collapse;margin:15px 0;font-size:14px}
+th,td{border-bottom:1px solid var(--line);padding:11px 12px;text-align:left;vertical-align:top}
+th{background:#f7f9fc;color:#34435b;font-weight:700}
+tr:last-child td{border-bottom:0}
+code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#f1f4f8;padding:2px 5px;border-radius:5px;font-size:.92em}
+.math{font-family:Georgia,serif;text-align:center;font-size:21px;padding:14px;background:#f7f9fc;border-radius:10px;margin:16px 0}
+.diagram{border:1px solid var(--line);background:#fbfcff;border-radius:14px;padding:18px;margin:18px 0}
+.diagram-title{font-size:13px;color:var(--muted);font-weight:700;margin-bottom:12px}
+.layers{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.layer{border:1px solid var(--line);border-radius:9px;padding:12px 8px;text-align:center;background:white;font-size:13px}
+.layer.evicted{background:var(--amber-soft);border-color:#f0d7ae;color:var(--amber)}
+.small{font-size:13px;color:var(--muted)}
+.metric{font-size:27px;line-height:1.2;font-weight:750;color:var(--blue);letter-spacing:-.03em}
+.metric-label{font-size:12px;color:var(--muted);margin-top:5px}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
+.metric-box{background:#f7f9fc;border:1px solid var(--line);border-radius:12px;padding:16px}
+.refs li{margin:10px 0;padding-left:3px}
+.refs small{display:block;color:var(--muted);font-size:12px}
+.footer{color:var(--muted);font-size:12px;text-align:center;padding:24px 10px}
+@media(max-width:720px){
+ .wrap{padding:16px 12px 40px}.hero{padding:32px 24px}.toc ol{columns:1}
+ section{padding:23px 20px}.grid{grid-template-columns:1fr}.metrics{grid-template-columns:1fr}
+ .layers{grid-template-columns:repeat(2,1fr)}table{display:block;overflow-x:auto;white-space:nowrap}
+}
+@media print{
+ body{background:white}.wrap{max-width:none;padding:0}.hero,section,.toc{box-shadow:none;break-inside:avoid}
+ .hero{border-radius:0}section{border:0;border-bottom:1px solid #ddd;padding:22px 0;margin:0}
+ .toc{border:0;padding:18px 0}.footer{display:none}a{color:inherit;text-decoration:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="hero">
+  <div class="eyebrow">Research note · vLLM hybrid cache</div>
+  <h1>Hybrid KV Cache 分组管理与 Metadata 开销</h1>
+  <p>阶段性结论整理：从 Group、Block Table 与 Attention Metadata 的关系出发，梳理 vLLM 已有优化实践、真实性能证据，以及对细粒度缓存管理设计的启示。</p>
+  <div class="meta">
+    <span class="pill">组会汇报版</span><span class="pill">截至 2026-11-25</span><span class="pill">重点：#52297 / #58762 / #58851 / #60008</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <strong>内容导航</strong>
+  <ol>
+    <li><a href="#summary">核心结论</a></li>
+    <li><a href="#group">为什么需要 Group</a></li>
+    <li><a href="#metadata">Block Table 与 Metadata</a></li>
+    <li><a href="#optimizations">vLLM 的优化演进</a></li>
+    <li><a href="#issue">真实性能与正确性问题</a></li>
+    <li><a href="#implication">对分层驱逐设计的启示</a></li>
+    <li><a href="#parallel">CPU 并行 Builder 的判断</a></li>
+    <li><a href="#scope">结论边界与版本说明</a></li>
+    <li><a href="#refs">Issue / PR 引用</a></li>
+  </ol>
+</nav>
+
+<section id="summary">
+  <div class="kicker">Executive summary</div>
+  <h2>核心结论</h2>
+  <p class="lead"><b>增加 KV Cache Group 会带来额外运行时开销，但 Group 数量并不必然等比例转化为 Metadata 构建开销。</b></p>
+  <div class="callout teal">
+    vLLM 已有工作表明，可以通过公共 Metadata 预计算、跨 Group 复用，以及批量计算 Group-specific 索引来控制多 Group 开销。因此，细粒度缓存管理不必简单地以牺牲 Group 数量为代价。
+  </div>
+  <div class="grid">
+    <div class="card"><h3>缓存管理粒度</h3><p>哪些层或状态可以独立驻留、驱逐、分配物理块和恢复。</p></div>
+    <div class="card"><h3>Metadata 计算粒度</h3><p>哪些计算可以跨 Group 共享，哪些物理映射和状态字段必须独立维护。</p></div>
+  </div>
+  <p><b>阶段性设计原则：</b>将缓存管理粒度与 Metadata 计算粒度解耦；共享公共计算，但保持 Group-local 物理映射、状态索引和 Checkpoint 依赖的正确性。</p>
+</section>
+
+<section id="group">
+  <h2>1. 为什么需要 Group？</h2>
+  <p>Hybrid 模型不同层可能具有不同的缓存状态与内存需求，例如：</p>
+  <div class="grid">
+    <div class="card"><h3>Full Attention</h3><p>保存完整 KV Cache，通常按 Attention KV block 管理。</p></div>
+    <div class="card"><h3>SWA</h3><p>只需要满足滑动窗口语义的 KV 数据，缓存范围和复用约束不同。</p></div>
+    <div class="card"><h3>Mamba / GDN / SSM</h3><p>需要维护 recurrent state 或 checkpoint，恢复依赖状态位置与合法恢复点。</p></div>
+    <div class="card"><h3>KV Cache Group</h3><p>将缓存规格兼容的层组织起来，分别管理相应的缓存块及运行时映射。</p></div>
+  </div>
+  <p>Group 不只是逻辑分类，也影响 Block Table、物理块分配以及状态索引等运行时结构。</p>
+  <div class="callout">
+    Group 数量增加后，系统可能需要维护更多 Block Table、状态索引和 Group-local Metadata，并执行更多更新操作。但这不意味着所有公共计算都必须重复执行。
+  </div>
+</section>
+
+<section id="metadata">
+  <h2>2. Block Table 与 Attention Metadata：必须区分</h2>
+  <h3>2.1 Block Table：描述物理缓存映射</h3>
+  <p>Block Table 记录请求逻辑缓存块与物理 Block ID 之间的映射。可以将不同 Group 的映射简化为：</p>
+  <div class="diagram">
+    <div class="diagram-title">同一请求的逻辑 Block，在不同 Group 中对应不同物理 Block</div>
+    <p class="small">逻辑 Block 序列</p>
+    <div class="flow">
+      <div class="node"><b>B0</b></div><div class="node"><b>B1</b></div><div class="node"><b>B2</b></div><div class="node"><b>B3</b></div>
+    </div>
+    <div class="grid">
+      <div class="card"><h3>Group 0 Block Table</h3><code>[12, 18, 25, 31]</code></div>
+      <div class="card"><h3>Group 1 Block Table</h3><code>[42, 47, 51, 63]</code></div>
+    </div>
+    <p class="small">示意数据，仅用于说明不同 Group 可具有独立物理映射。实际维度取决于执行路径。</p>
+  </div>
+  <p>在讨论的 vLLM 实现中，<code>MultiGroupBlockTable</code> 管理多个 Group 对应的 Block Table。典型 Block Table Tensor 可抽象为：</p>
+  <div class="math">[ max_num_reqs, max_num_blocks_per_req ]</div>
+  <p>其中保存物理 Block ID，通常使用 int32。Block Table 与物理缓存布局紧密相关，不能因为 Metadata 可共享，就认为 Block Table 也可以直接共享。</p>
+
+  <h3>2.2 Attention Metadata：描述本轮计算所需信息</h3>
+  <p>Attention Metadata 是 Attention Backend 在执行模型计算时需要的信息集合，可能包括当前 batch 的请求数、序列长度、Query/KV 位置与长度、Block Table 相关信息、Slot Mapping 以及其他辅助 Tensor。它不是固定形状的单一 Tensor，而是由具体 Backend 的 Metadata Builder 构造。</p>
+  <table>
+    <thead><tr><th>数据结构</th><th>主要作用</th><th>跨 Group 共享原则</th></tr></thead>
+    <tbody>
+      <tr><td>Batch-level Metadata</td><td>描述当前 batch 的公共计算信息</td><td><span class="tag green">通常可共享</span></td></tr>
+      <tr><td>Block Table</td><td>描述 Group 的物理缓存映射</td><td><span class="tag orange">通常需独立</span></td></tr>
+      <tr><td>Group-specific State Index</td><td>描述某个 Group 对应的状态位置</td><td><span class="tag orange">保持 Group 对应关系</span></td></tr>
+      <tr><td>Checkpoint 映射</td><td>指定状态保存或恢复的位置</td><td><span class="tag red">必须保证本组正确性</span></td></tr>
+    </tbody>
+  </table>
+  <div class="math">M<sub>g</sub> = M<sub>common</sub> + M<sub>group,g</sub></div>
+  <p>这是一种理解 Metadata 的抽象分解：公共部分跨 Group 复用，Group-local 部分仍需按组维护。</p>
+</section>
+
+<section id="optimizations">
+  <h2>3. vLLM 已有的优化演进</h2>
+  <p>目前找到的工作可以串成一条路线：<b>消除重复公共计算 → 复用公共 Metadata → 批量计算 Group-specific 字段。</b></p>
+
+  <h3>3.1 PR #52297：把公共 Metadata 计算移出 per-Group Builder</h3>
+  <p><a href="https://github.com/vllm-project/vllm/pull/52297" target="_blank" rel="noopener">[Attention] Move GDN common metadata compute out of per-group build</a></p>
+  <div class="diagram">
+    <div class="diagram-title">优化前：每个 Group 重复计算公共信息</div>
+    <div class="flow">
+      <div class="node"><b>Group 0</b><small>Builder 重复计算</small></div>
+      <div class="node"><b>Group 1</b><small>Builder 重复计算</small></div>
+      <div class="node"><b>Group 2</b><small>Builder 重复计算</small></div>
+    </div>
+    <div class="diagram-title">优化后：公共部分预计算一次，再供各 Group 使用</div>
+    <div class="node"><b>gdn_precompute_metadata()</b><small>生成公共 Batch Metadata</small></div>
+    <div class="flow">
+      <div class="node"><b>Group 0</b><small>使用公共结果 + 本组字段</small></div>
+      <div class="node"><b>Group 1</b><small>使用公共结果 + 本组字段</small></div>
+      <div class="node"><b>Group 2</b><small>使用公共结果 + 本组字段</small></div>
+    </div>
+  </div>
+  <div class="metrics">
+    <div class="metric-box"><div class="metric">900 → 300 μs</div><div class="metric-label">单次 GDN Metadata 构建时间</div></div>
+    <div class="metric-box"><div class="metric">≈67%</div><div class="metric-label">构建耗时降低</div></div>
+    <div class="metric-box"><div class="metric">+61%</div><div class="metric-label">H200 / Qwen3.6-35B-A3B + DFlash，c=1 输出吞吐提升</div></div>
+  </div>
+  <p>c=16 输出吞吐提升约 12%。该 benchmark 关闭 Prefix Caching，因此收益来自 Metadata 构建优化本身，而不是缓存命中率变化。</p>
+  <div class="callout">结论：消除 Group 间公共计算的重复执行，即使不改变缓存策略，也可能带来明显收益。</div>
+
+  <h3>3.2 PR #58762：首个 Group build，后续 Group 复用并更新</h3>
+  <p><a href="https://github.com/vllm-project/vllm/pull/58762" target="_blank" rel="noopener">[Perf][MRV2] Reuse Mamba/GDN metadata across KV cache groups</a> <span class="tag green">已合并</span></p>
+  <p>对于相同 <code>MambaSpec</code> 和 Builder 类型，且 Builder 支持 <code>update_block_table()</code> 的多个 Group：</p>
+  <div class="diagram">
+    <div class="node"><b>Group 0：build()</b><small>构建完整 Metadata</small></div>
+    <div class="arrow" style="text-align:center">↓</div>
+    <div class="node" style="background:#e9f7f5;border-color:#b7e5df"><b>复用公共 Batch Metadata</b></div>
+    <div class="flow">
+      <div class="node"><b>Group 1</b><small>update_block_table()</small></div>
+      <div class="node"><b>Group 2</b><small>update_block_table()</small></div>
+      <div class="node"><b>Group N</b><small>update_block_table()</small></div>
+    </div>
+  </div>
+  <p>后续 Group 并非什么都不做，而是复用公共部分，再更新本组所需的 Block Table 相关字段。不是所有 Builder 都能无条件复用。</p>
+  <div class="metrics">
+    <div class="metric-box"><div class="metric">1032 → 424</div><div class="metric-label">c=1 每 step CUDA API calls（main 对比优化版本）</div></div>
+    <div class="metric-box"><div class="metric">−40%</div><div class="metric-label">c=1 step time，相对 main</div></div>
+    <div class="metric-box"><div class="metric">+57%</div><div class="metric-label">c=1 输出吞吐，相对 main</div></div>
+  </div>
+  <p>c=32 输出吞吐提升约 23%。在 46 Groups 与 17 Groups 对比中，46 Groups 的 c=1 step-time penalty 从约 +39% 降至约 +15%。46 Groups 保留约 4.46M tokens KV capacity，17 Groups 约 3.12M，多保留约 43%。</p>
+  <div class="callout teal">结论：多 Group 的公共 Metadata 可以复用。细粒度 Group 并不必然意味着同等倍数的完整 Metadata 构建成本。</div>
+
+  <h3>3.3 PR #58851：跨 Group 批量计算 Mamba / GDN / KDA Metadata</h3>
+  <p><a href="https://github.com/vllm-project/vllm/pull/58851" target="_blank" rel="noopener">[Perf][MRV2] Share GDN, Mamba and Kimi-K3 KDA batch metadata across KV cache groups</a> <span class="tag orange">当时为 Open PR</span></p>
+  <p>该 PR 将 #58762 的思路扩展到 Kimi-K3 KDA 和 speculative Mamba 等场景。一个具体实现是：将多个 Group 的 Mamba aligned state indices 通过一次 Triton Kernel 批量计算。</p>
+  <div class="math">[ num_groups, max_num_reqs, 1 + num_speculative_blocks ]</div>
+  <p>输出 Tensor 的三个维度分别对应 Group、Request，以及状态索引 / speculative block 相关索引。计算完成后，将不同 Group 对应的切片交给各自 Builder。</p>
+  <div class="callout amber">这不是多个 CPU Builder 并行执行，而是把多个 Group 的 GPU 索引计算合并为一次批量 Kernel。#58851 在现有记录中仍是 Open PR，不应描述为已进入正式 main。</div>
+</section>
+
+<section id="issue">
+  <h2>4. 真实性能问题：Group 增加的开销确实存在</h2>
+  <p><a href="https://github.com/vllm-project/vllm/issues/60008" target="_blank" rel="noopener">Issue #60008：Hybrid Mamba prefix caching performance overhead</a></p>
+  <p>该 Issue 对 Nemotron-3.5-Lightning、Model Runner V2 的运行时做了 profiling。实验使用 4×GB200、随机 8K input / 1K output，并且没有实际 Prefix Cache 命中。开启 Mamba prefix caching 后仍观察到显著开销。</p>
+  <h3>4.1 主要开销来源</h3>
+  <div class="grid">
+    <div class="card"><h3>Group-specific Block Table 操作</h3><p>4 个 Mamba Groups × 每组约 7 个 Torch 操作，形成约 28 次额外 eager launches。</p></div>
+    <div class="card"><h3>CUDA Graph 外的 align Kernel</h3><p>部分每 step 的对齐计算不在 CUDA Graph 中，增加 CPU/GPU 调度开销和 GPU idle。</p></div>
+    <div class="card"><h3>Prefill 切分</h3><p>Block Boundary 对齐可能造成额外 prefill split，影响 TTFT，不能将全部损失归结为 Metadata Builder。</p></div>
+    <div class="card"><h3>Group 数量放大重复工作</h3><p>若每组独立执行索引与映射操作，Group 数增加会增加 Kernel Launch 和调度成本。</p></div>
+  </div>
+  <h3>4.2 Profiling 数据</h3>
+  <table>
+    <thead><tr><th>配置</th><th>Step time</th><th>GPU idle</th><th>Host span</th></tr></thead>
+    <tbody>
+      <tr><td>Prefix Caching off</td><td>4073 μs</td><td>385 μs</td><td>2825 μs</td></tr>
+      <tr><td>Prefix Caching on，baseline</td><td>5262 μs</td><td>1022 μs</td><td>3903 μs</td></tr>
+      <tr><td>#58737 优化</td><td>4599 μs</td><td>409 μs</td><td>3276 μs</td></tr>
+      <tr><td>#58851 优化</td><td>4346 μs</td><td>164 μs</td><td>3018 μs</td></tr>
+      <tr><td>#58851 + #58737</td><td>4385 μs</td><td>161 μs</td><td>3075 μs</td></tr>
+    </tbody>
+  </table>
+  <p><b>#58737</b> 主要融合 Block Table Gather 路径中的操作，减少 eager 操作 / Launch；<b>#58851</b> 主要共享跨 Group 的 aligned-index 计算。二者针对的开销不同，可以互补。</p>
+  <div class="callout teal">#58851 的优化思路将多个 Group 的 aligned-index 计算合并为一次计算。Issue 中 GPU idle 从 baseline 的 1022 μs 降至 164 μs，Host span 从 3903 μs 降至 3018 μs。</div>
+
+  <h3>4.3 重要正确性教训：Checkpoint Metadata 不能无差别共享</h3>
+  <p>Issue #60008 还记录了一个静默数据错误：尝试将 Metadata 复用与 Mamba2 内部 Prefill Checkpoint 结合时，某些 Group 复用了首个 Group 的 checkpoint metadata，导致后续 Group 可能将 checkpoint 写入首个 Group 的物理 Block。</p>
+  <p>原因在于：部分 checkpoint metadata 字段依赖具体 Group 的 Block Table。它们不是公共 Batch Metadata。</p>
+  <div class="callout red"><b>正确性约束：</b>公共 Batch 信息可以共享，但物理映射、Checkpoint 目的位置、State Index 和恢复依赖必须保留 Group-local 对应关系。</div>
+</section>
+
+<section id="implication">
+  <h2>5. 对我们的分层驱逐设计意味着什么？</h2>
+  <h3>5.1 分层驱逐要求物理映射具备独立性</h3>
+  <p>假设一个 Group 中包含 4 个 Full Attention 层。如果 4 层共享同一套 Block Table，那么仅靠这张表通常无法表达“Layer 1 已驱逐、其他层仍驻留”这种完全独立的物理缓存状态。</p>
+  <div class="diagram">
+    <div class="diagram-title">目标：层级缓存状态可以独立变化</div>
+    <div class="layers">
+      <div class="layer">Layer 0<br><span class="tag green">驻留</span></div>
+      <div class="layer evicted">Layer 1<br><span class="tag orange">已驱逐</span></div>
+      <div class="layer">Layer 2<br><span class="tag green">驻留</span></div>
+      <div class="layer">Layer 3<br><span class="tag green">驻留</span></div>
+    </div>
+    <p class="small">示意：需要某种 per-layer 物理映射、有效性状态或更细粒度 Group 机制来表达。</p>
+  </div>
+  <p>可能的实现方向包括：</p>
+  <ol>
+    <li>将原有 Group 拆成更细粒度的 Group，各自维护 Block Table。</li>
+    <li>保留较大的逻辑 Group，但增加 per-layer 物理映射或有效性间接表。</li>
+  </ol>
+  <p>两种方案的具体成本不同，但都要求不能再假设一张共享 Block Table 足以描述所有层的独立缓存映射。</p>
+
+  <h3>5.2 管理粒度与 Metadata 构建粒度可以解耦</h3>
+  <p>假设把 16 个层拆成 16 个 Group：</p>
+  <ul>
+    <li>16 个 Group 可以具有独立的缓存分配和驱逐状态。</li>
+    <li>16 个 Group 可以具有各自的 Block Table。</li>
+    <li>但它们不一定需要 16 次完整的 Batch Metadata 构建。</li>
+  </ul>
+  <div class="math">M<sub>g</sub> = M<sub>common</sub> + M<sub>local,g</sub></div>
+  <table>
+    <thead><tr><th>Metadata 部分</th><th>建议处理方式</th></tr></thead>
+    <tbody>
+      <tr><td>Common Metadata</td><td>当前 Batch 公共信息，计算一次并跨 Group 复用</td></tr>
+      <tr><td>Group-local Mapping</td><td>各 Group 的 Block Table 信息独立更新</td></tr>
+      <tr><td>Group-local State</td><td>状态索引、Checkpoint 位置等保留各自映射</td></tr>
+      <tr><td>批量索引计算</td><td>兼容字段尽可能合并为一次 GPU Kernel</td></tr>
+    </tbody>
+  </table>
+  <div class="callout teal"><b>关键认识：</b>缓存管理层面可以采用细粒度 Group；计算层面则通过共享公共 Metadata 和批量更新控制开销。二者不必绑定。</div>
+
+  <h3>5.3 共享 Metadata 不等于共享缓存状态</h3>
+  <p>Full Attention KV、SWA KV、Mamba/GDN recurrent state 的恢复依赖并不相同。即使多个 Group 能复用公共 Batch Metadata，也不意味着它们可以共用物理 Block 映射、Checkpoint 位置、State Index、驻留状态或恢复合法性信息。</p>
+  <p>对我们的方案，正确性约束应当是：<b>共享计算所需的公共信息，而不是不同缓存状态的物理身份和恢复依赖关系。</b></p>
+</section>
+
+<section id="parallel">
+  <h2>6. 关于 CPU 并行 Builder：当前证据支持什么判断？</h2>
+  <p>此前讨论过是否可以让多个 Group 的 Metadata Builder 并行执行。结合目前找到的真实实现，需要调整该方向的优先级。</p>
+  <p>目前没有足够的 vLLM Issue 或 PR 证据证明，多线程并行执行多个 CPU Builder 是解决 Group Metadata 开销的主要有效路线。社区实际采用的优化路径是：</p>
+  <table>
+    <thead><tr><th>优化方向</th><th>代表工作</th><th>核心思路</th></tr></thead>
+    <tbody>
+      <tr><td>消除公共计算重复</td><td><a href="https://github.com/vllm-project/vllm/pull/52297">#52297</a></td><td>公共 Metadata 预计算一次</td></tr>
+      <tr><td>跨 Group 复用</td><td><a href="https://github.com/vllm-project/vllm/pull/58762">#58762</a></td><td>首个 Group build，后续 Group update</td></tr>
+      <tr><td>批量计算 Group-specific 字段</td><td><a href="https://github.com/vllm-project/vllm/pull/58851">#58851</a></td><td>多个 Group 的索引通过一个 Triton Kernel 计算</td></tr>
+      <tr><td>融合 Block Table 操作</td><td><a href="https://github.com/vllm-project/vllm/issues/60008">#58737，见 #60008 讨论</a></td><td>减少 Torch 操作和 GPU Launch</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">目前更有依据的优先级是：先消除重复计算、复用 Metadata、批量化 GPU 操作；CPU 多线程并行 Builder 暂时不是首要方向。这不等于 CPU 并行绝对不可行，而是尚缺乏足够的实证支持。</div>
+</section>
+
+<section id="scope">
+  <h2>7. 结论边界与版本说明</h2>
+  <ul>
+    <li><b>不是所有 Group 都能共享 Metadata：</b>#58762 的复用依赖兼容的 Spec、Builder 类型和更新接口。</li>
+    <li><b>已有优化没有解决任意层级独立驱逐：</b>这些工作主要优化 Metadata 与索引计算，不等于已经实现任意层级的缓存驻留、驱逐和精确恢复。</li>
+    <li><b>PR 状态需要区分：</b>#58762 已合并；#58851 在当前掌握记录中为 Open PR；#60008 是性能分析 Issue。</li>
+    <li><b>性能数据不能直接外推：</b>相关数据主要来自 H200、B200、GB200 等环境，与本地 A800 环境不同。</li>
+    <li><b>当前代码版本：</b>vLLM 0.30.0，commit <code>ced6857afa0ea7b2e3f0846a62e1394e90f15607</code>。上述后续 PR 的优化不能假定已存在于该 commit，需要单独核对或移植。</li>
+  </ul>
+</section>
+
+<section id="refs">
+  <h2>8. 已知 Issue / PR 引用</h2>
+  <ol class="refs">
+    <li><a href="https://github.com/vllm-project/vllm/pull/52297" target="_blank" rel="noopener"><b>PR #52297 — Move GDN common metadata compute out of per-group build</b></a><small>公共 GDN Metadata 预计算；约 900 μs → 300 μs；说明跨 Group 重复计算的优化空间。</small></li>
+    <li><a href="https://github.com/vllm-project/vllm/pull/58762" target="_blank" rel="noopener"><b>PR #58762 — Reuse Mamba/GDN metadata across KV cache groups</b></a><small>首个 Group build、后续 Group update_block_table；已合并；提供多 Group Metadata 复用的性能数据。</small></li>
+    <li><a href="https://github.com/vllm-project/vllm/pull/58851" target="_blank" rel="noopener"><b>PR #58851 — Share GDN, Mamba and Kimi-K3 KDA batch metadata across KV cache groups</b></a><small>扩展跨 Group 共享，并通过 Triton Kernel 批量计算 aligned state indices；当前掌握状态为 Open。</small></li>
+    <li><a href="https://github.com/vllm-project/vllm/issues/60008" target="_blank" rel="noopener"><b>Issue #60008 — Hybrid Mamba prefix caching performance overhead</b></a><small>实际 profiling：eager launches、GPU idle、Host span；分析 #58851 / #58737 优化效果，并记录 checkpoint metadata 共享导致的静默错误。</small></li>
+    <li><a href="https://github.com/vllm-project/vllm/issues/58638" target="_blank" rel="noopener"><b>RFC #58638 — KV cache grouping for hybrid models with speculative drafters</b></a><small>46 Groups 与 17 Groups 的性能和容量对比；说明 Metadata 复用对 Group 数量开销的影响。</small></li>
+  </ol>
+</section>
+
+<section>
+  <h2>总结页：可以直接用于汇报</h2>
+  <p class="lead">Hybrid LLM 的细粒度缓存管理可能需要增加 KV Cache Group，以支持不同层或不同缓存状态的独立驻留、驱逐和恢复。但 Group 数量增加会带来额外的 Block Table 管理、Metadata 更新及 GPU Kernel Launch 开销。</p>
+  <p>vLLM 的已有工作表明，这些开销并不必然随 Group 数量线性增长。通过公共 Metadata 预计算（#52297）、跨 Group Metadata 复用（#58762）以及批量计算 Group-specific 索引（#58851），可以显著降低多 Group 管理成本。真实 profiling（#60008）也验证了这些优化对 GPU idle、Host span 和执行开销的改善。</p>
+  <div class="callout teal">
+    <b>因此，我们的设计不应简单地在缓存管理粒度和运行时开销之间做取舍，而应将两者解耦：</b>缓存管理层面允许不同层独立管理，计算层面尽可能复用公共 Metadata，同时严格保留各 Group 的物理映射、状态索引和 Checkpoint 依赖关系。
+  </div>
+  <p><b>三个需要记住的概念：</b></p>
+  <ol>
+    <li>Group 是缓存管理的组织单位，不意味着所有计算都必须独立执行。</li>
+    <li>Metadata 可以共享，但 Block Table 和状态恢复依赖必须保持正确的 Group 对应关系。</li>
+    <li>真正值得研究的不是如何减少 Group，而是如何在细粒度管理下消除 Group 间的重复工作。</li>
+  </ol>
+</section>
+<div class="footer">Hybrid KV Cache · Research summary · 2026-11-25</div>
+</div>
+</body>
+</html>
