@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="用实例理解 vLLM hybrid KV cache：为什么分 group，page、block、共享池和 HBM 物理页之间是什么关系。">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <title>vLLM Hybrid KV Cache · 从 group 到地址</title>
+  <style>
+    :root{--ink:#192a35;--muted:#586974;--paper:#f6f7f3;--white:#fff;--line:#dce3df;--teal:#087f72;--teal-light:#e6f4ee;--amber:#8b5911;--amber-light:#fff1d5;--blue:#245baa;--blue-light:#edf3ff;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;--sans:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:90px}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.75 var(--sans)}a{color:var(--blue);text-underline-offset:4px}button,select{font:inherit}button{cursor:pointer}button,select,a{touch-action:manipulation}button:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid var(--blue);outline-offset:4px}code,.mono{font-family:var(--mono)}code{font-size:.91em;background:#edf0ed;padding:.12em .32em;border-radius:4px}h1,h2,h3,p{margin:0}h1,h2,h3{line-height:1.35;font-weight:700;letter-spacing:-.035em}h1{font-size:clamp(32px,4.8vw,58px);max-width:820px}h2{font-size:clamp(25px,3vw,34px)}h3{font-size:19px}p+p{margin-top:12px}strong{font-weight:700}.wrap{max-width:1080px;margin:auto;padding:0 32px}.topbar{position:sticky;top:0;z-index:10;background:rgba(246,247,243,.97);border-bottom:1px solid var(--line)}.topbar .wrap{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:64px}.brand{font-size:14px;font-weight:750;letter-spacing:.03em;white-space:nowrap}.brand span{color:var(--teal)}nav{display:flex;gap:22px}nav a{font-size:13px;color:var(--muted);text-decoration:none}nav a:hover{color:var(--teal)}.print{background:none;border:1px solid var(--line);border-radius:6px;padding:6px 12px;color:var(--muted);font-size:13px}.hero{padding:65px 0 48px}.eyebrow{font:12px var(--mono);letter-spacing:.08em;color:var(--teal);margin-bottom:20px}.lead{font-size:20px;color:var(--muted);margin-top:22px;max-width:780px}.hero-facts{display:flex;gap:24px;flex-wrap:wrap;margin-top:28px;font-size:13px;color:var(--muted)}.hero-facts b{color:var(--ink)}section{padding:40px 0 44px;border-top:1px solid var(--line)}.section-head{display:flex;gap:18px;align-items:baseline;margin-bottom:18px}.number{font:14px var(--mono);color:var(--teal);flex-shrink:0}.intro{color:var(--muted);max-width:850px;margin-bottom:24px}.panel{background:var(--white);border:1px solid var(--line);border-radius:12px;padding:26px}.panel+.panel{margin-top:18px}.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{padding:20px;border:1px solid var(--line);border-radius:10px;background:var(--white)}.card .label{font:12px var(--mono);color:var(--muted);margin-bottom:10px}.card p{font-size:14px;color:var(--muted);margin-top:10px}.pill{display:inline-block;padding:3px 9px;border-radius:4px;font-size:12px;font-weight:650;line-height:1.6}.full{color:var(--teal);background:var(--teal-light)}.sw{color:var(--amber);background:var(--amber-light)}.note{font-size:13px;color:var(--muted);line-height:1.7}.callout{padding:15px 18px;border-left:3px solid var(--teal);background:var(--teal-light);font-size:14px;margin-top:20px}.control-label{font-size:13px;font-weight:650;margin-bottom:10px}.segmented{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:24px}.segmented button{padding:9px 15px;min-height:44px;border:1px solid var(--line);background:var(--white);border-radius:6px;color:var(--muted);font-size:14px}.segmented button[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:white}.segmented button:hover:not([aria-pressed="true"]){border-color:var(--teal);color:var(--teal)}.group-map{display:flex;gap:12px;margin:0 0 22px;flex-wrap:wrap}.group-card{flex:1;min-width:145px;padding:14px 16px;border-radius:7px;border:1px solid var(--line)}.group-card b{display:block;font-size:15px;margin-bottom:3px}.group-card span{font-size:12px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding-top:20px;border-top:1px solid var(--line)}.stat .name{color:var(--muted);font-size:12px}.stat .value{font:600 25px/1.5 var(--mono);letter-spacing:-.06em;margin:5px 0}.stat .unit{font-size:11px;color:var(--muted)}.bar-label{display:flex;justify-content:space-between;gap:10px;margin-top:22px;margin-bottom:7px;font-size:12px;color:var(--muted)}.capacity-bar{height:14px;background:var(--amber-light);border:1px solid #d2dfd7;border-radius:4px;overflow:hidden}.capacity-bar .useful{height:100%;background:var(--teal);transition:width .2s}.result-line{margin-top:14px;font-size:14px;min-height:50px}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:10px}.dot{display:inline-block;width:9px;height:9px;margin-right:5px;border-radius:2px;background:var(--teal)}.dot.pad{background:#e6c27e}.evidence{margin-top:20px;font-size:14px;padding-top:16px;border-top:1px solid var(--line)}.evidence .big{font:650 20px var(--mono);color:var(--teal)}.definition{display:grid;grid-template-columns:110px 1fr;gap:16px;padding:17px 0;border-bottom:1px solid var(--line)}.definition:last-child{border:0}.definition .term{font:650 17px var(--mono)}.definition p{font-size:14px}.definition small{display:block;color:var(--muted);font-size:12px;margin-top:4px}.formula{background:#eef2ef;border-radius:7px;padding:15px 18px;font:13px/1.9 var(--mono);overflow-wrap:anywhere;margin-top:18px}.block-bundle{border:2px solid var(--teal);padding:18px;border-radius:9px;margin-top:18px}.bundle-title{display:flex;align-items:center;justify-content:space-between;font-size:13px;margin-bottom:12px;gap:8px}.pages{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}.page{padding:11px 2px;text-align:center;background:var(--teal-light);border:1px solid #b8d9cd;border-radius:4px;font:12px var(--mono)}.compare-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin-top:18px}.arrow{color:#72827a;font-size:20px}.scroll{overflow-x:auto;max-width:100%}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:13px 14px;border-bottom:1px solid var(--line);vertical-align:top}th{font-weight:600;color:var(--muted);font-size:12px;background:#f6f8f5}tbody tr:last-child td{border-bottom:0}.numeric{font-family:var(--mono);white-space:nowrap}.table-note{margin-top:12px}.compact th,.compact td{padding:12px}.id-table{margin-top:16px}.id-table th,.id-table td{text-align:center}.id-table th:first-child,.id-table td:first-child{text-align:left}.id-btn{min-width:48px;min-height:44px;border:1px solid var(--line);border-radius:5px;background:#fff;font:600 18px var(--mono);color:var(--ink)}.id-btn[aria-pressed="true"]{background:var(--teal);border-color:var(--teal);color:#fff}.layout-controls{display:flex;gap:18px;justify-content:space-between;align-items:start;flex-wrap:wrap;margin-top:24px}.layout-controls .segmented{margin-bottom:0}.layer-select{display:flex;align-items:center;gap:9px;font-size:13px;min-height:44px}.layer-select select{padding:8px 30px 8px 10px;background:white;border:1px solid var(--line);border-radius:5px;color:var(--ink)}.memory-wrap{margin-top:22px;padding-bottom:4px}.memory{display:grid;grid-template-columns:repeat(8,minmax(66px,1fr));gap:5px;min-width:570px;padding:5px}.cell{position:relative;text-align:center;border:1px solid #d4ddd7;border-radius:5px;background:#f4f6f3;padding:14px 3px 11px;font:12px/1.6 var(--mono)}.cell small{display:block;font-size:10px;color:var(--muted);margin-top:5px}.cell.null{background:#ebeeeb;color:#6b776f}.cell.peer{background:var(--blue-light);border-color:#9ab7dc}.cell.selected{background:var(--teal);border-color:var(--teal);color:white;outline:2px solid var(--teal);outline-offset:1px}.cell.selected small{color:#d7f1e8}.memory-legend{margin-top:10px}.memory-legend .selected-dot{background:var(--teal)}.memory-legend .peer-dot{background:#b9cceb}.address-output{margin-top:18px;padding:18px;background:#f0f4ef;border-radius:7px}.address-title{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:13px;margin-bottom:8px}.address-number{font:650 25px var(--mono);color:var(--teal)}.address-equation{font:12px/1.9 var(--mono);overflow-wrap:anywhere;margin-top:10px}.setup{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.setup span{font:12px var(--mono);padding:5px 8px;border:1px solid var(--line);border-radius:4px;background:#f8faf6}.state-page{display:flex;margin:18px 0 12px;min-height:66px;gap:4px}.state-page>span{display:flex;align-items:center;justify-content:center;padding:12px 9px;background:var(--amber-light);color:var(--amber);border-radius:5px;font-size:13px;flex:1}.state-page>span:nth-child(2){flex:2}.state-page>span:last-child{flex:0 0 70px;background:#eef0ed;color:var(--muted)}.key-number{font:650 31px/1.3 var(--mono);letter-spacing:-.05em;color:var(--teal)}.key-number small{font-size:13px;letter-spacing:0;color:var(--muted)}.stat-box{padding:20px;background:var(--teal-light);border-radius:8px;margin-top:18px}.init-flow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:20px}.init-flow .step{padding:10px 12px;border:1px solid var(--line);background:#fff;border-radius:5px;font-size:13px}.translation{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px}.translation .lane{padding:18px;border:1px solid var(--line);border-radius:8px;background:white}.lane .lane-title{font:12px var(--mono);color:var(--muted);margin-bottom:12px}.chain{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.chain span:not(.arrow){font-size:13px;background:#f0f3ef;padding:7px 9px;border-radius:4px}.physical-pages{display:flex;gap:9px;margin-top:14px;flex-wrap:wrap}.physical-pages span{padding:8px 12px;border:1px dashed #aab9ae;border-radius:4px;font:12px var(--mono)}.footer{padding:26px 0 45px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}details{margin-top:16px}summary{cursor:pointer;min-height:36px;color:var(--ink);font-size:13px}.sources{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px;margin-top:12px}.sources a{overflow-wrap:anywhere;font-size:12px}.footer-meta{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:20px}.noscript{border:1px solid #d8bb7d;background:var(--amber-light);padding:12px;margin-bottom:20px;font-size:13px}
+    nav{min-width:0;overflow-x:auto;padding:4px 0}nav a{white-space:nowrap}
+    @media(max-width:760px){.wrap{padding:0 20px}.hero{padding:42px 0 32px}.lead{font-size:17px}.topbar .wrap{min-height:58px;gap:12px}nav{gap:12px}nav a{font-size:12px}.print{display:none}.two,.three,.translation{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr;gap:18px}.panel{padding:20px}.section-head{gap:12px}.hero-facts{gap:12px}section{padding:30px 0}.sources{grid-template-columns:1fr}.definition{grid-template-columns:84px 1fr}.brand{font-size:12px}.pages{gap:5px}.page{font-size:11px}.result-line{min-height:0}.state-page>span{font-size:12px;padding:10px 5px}}
+    @media(max-width:440px){nav a:nth-child(2),nav a:nth-child(4){display:none}.segmented button{padding:8px 11px;font-size:13px}.panel{padding:17px}.id-table th,.id-table td{padding:9px 5px}.id-btn{min-width:43px}.group-card{min-width:120px}.stat .value{font-size:23px}.pages{grid-template-columns:repeat(5,1fr)}.key-number{font-size:27px}th,td{padding:11px 9px}.compact{font-size:12px}.compact th,.compact td{padding:10px 8px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.capacity-bar .useful{transition:none}}
+    @media print{@page{margin:16mm}body{background:#fff;font-size:10pt}.wrap{max-width:none;padding:0}.topbar,nav,.print,.segmented,.layer-select{display:none}.id-btn,.id-btn[aria-pressed="true"]{border:0;background:transparent;color:var(--ink);min-height:0;padding:0}.hero{padding:0 0 20px}h1{font-size:29pt}h2{font-size:19pt}.lead{font-size:12pt}.hero-facts{margin-top:15px}section{padding:20px 0}.panel,.card,.lane{break-inside:avoid;box-shadow:none}.panel{padding:15px}.two{gap:12px}.stats{gap:10px}.stat .value{font-size:18pt}.footer{padding-bottom:0}.sources{display:block}.sources a{display:block;margin:5px 0}.memory{min-width:0;grid-template-columns:repeat(8,1fr)}.cell{font-size:8pt;padding:8px 2px}.cell small{font-size:7pt}.scroll{overflow:visible}a{color:inherit}details:not([open]){display:none}.capacity-bar,.cell,.page,.state-page>span,.pill{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <div class="brand">vLLM <span>/</span> CACHE NOTES</div>
+      <nav aria-label="章节导航"><a href="#why">分组动机</a><a href="#terms">三个概念</a><a href="#address">地址实例</a><a href="#qwen">Qwen 实例</a><a href="#hbm">HBM</a></nav>
+      <button class="print" id="print-button" type="button">打印 / PDF</button>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="hero">
+      <div class="eyebrow">HYBRID KV CACHE / AN EXAMPLE-DRIVEN GUIDE</div>
+      <h1>同一池显存，<br>按不同的层需求分配。</h1>
+      <p class="lead">group 让相同需求的层共享管理；block ID 领取容量；page 保存某一层的数据。</p>
+      <div class="hero-facts"><span>代码基线 <b>vLLM v0.30.0</b></span><span>核对日期 <b>2026-11-24</b></span><span>示例计算 ≠ 性能实测</span></div>
+    </div>
+    <noscript><p class="noscript">JavaScript 未启用。下方显示默认示例；切换分组和地址布局需要启用 JavaScript。</p></noscript>
+
+    <section id="why" aria-labelledby="why-title">
+      <div class="section-head"><span class="number">01</span><h2 id="why-title">为什么要分 group？</h2></div>
+      <p class="intro">Full 要留完整历史，SWA 只需窗口，linear 层保留状态。先按需求分开，再把需求相同的层合起来，减少重复管理。</p>
+      <div class="three">
+        <div class="card"><div class="label">不同需求，分开分配</div><h3>Full 与 SWA 分开</h3><p>同一请求的 Full 可能需要 7 块，SWA 只需 2 块。共用一张表会让窗口外空间也被保留。</p></div>
+        <div class="card"><div class="label">相同需求，共享一张表</div><h3>10 个 Full 层合组</h3><p>它们要留的 token 范围相同，block table 可以共享；每层的 K/V 数值仍不同。</p></div>
+        <div class="card"><div class="label">共享池，统一分配容量</div><h3>把 20 个 SWA 层再拆开</h3><p>拆成两个 10 层组，和 Full 组大小相同，池里的空闲块就能互相复用。</p></div>
+      </div>
+      <div class="panel" style="margin-top:22px">
+        <div class="control-label">试一试：10 个 Full 层 + 20 个 SWA 层，怎么分？</div>
+        <p class="note" style="margin-bottom:16px">设 B=16、单层页 p=64 KiB。沿用稳态简化快照：Full 每组 7 块，SWA 每组 2 块；不计新 chunk、lookahead 与窗口边界临时需求。</p>
+        <div class="segmented" role="group" aria-label="分组方案">
+          <button type="button" data-plan="type" aria-pressed="false">按类型：2 组</button>
+          <button type="button" data-plan="balanced" aria-pressed="true">等分：3 组</button>
+          <button type="button" data-plan="layer" aria-pressed="false">逐层：30 组</button>
+        </div>
+        <div id="group-map" class="group-map"><div class="group-card full"><b>Full · 10 层</b><span>P = 640 KiB</span></div><div class="group-card sw"><b>SWA · 10 层</b><span>P = 640 KiB</span></div><div class="group-card sw"><b>SWA · 10 层</b><span>P = 640 KiB</span></div></div>
+        <div class="stats" aria-live="polite" aria-atomic="true">
+          <div class="stat"><div class="name">池槽大小 S</div><div class="value" id="plan-slot">640 KiB</div><div class="unit">每个 block ID 预留</div></div>
+          <div class="stat"><div class="name">请求占用</div><div class="value" id="plan-total">6.875 MiB</div><div class="unit">有效数据 + 槽内 padding</div></div>
+          <div class="stat"><div class="name">槽内 padding</div><div class="value" id="plan-padding">0 MiB</div><div class="unit">不含单层页内部对齐</div></div>
+          <div class="stat"><div class="name">要管理的块</div><div class="value" id="plan-blocks">11</div><div class="unit">该请求领取的 block IDs</div></div>
+        </div>
+        <div class="bar-label"><span>有效数据始终为 6.875 MiB</span><span id="plan-bar-label">100% 有效数据</span></div>
+        <div class="capacity-bar" role="img" id="capacity-bar" aria-label="有效数据占100%，槽内padding为0"><div class="useful" id="useful-bar" style="width:100%"></div></div>
+        <div class="legend"><span><i class="dot"></i>有效数据</span><span><i class="dot pad"></i>槽内 padding</span></div>
+        <p class="result-line" id="plan-explanation">三组的 P 都是 10p，池槽 S=10p。Full 领 7 块，两个 SWA 组各领 2 块，共 11 块。</p>
+        <p class="note">逐层拆分可以不增加数据量，但管理块数变多。任意层的独立恢复，还需要有效性、checkpoint 和执行路径支持。</p>
+        <div class="evidence">管理开销有直接线索：上游 H200 + DFlash 的作者报告，46→10 组时，metadata 构造约 <span class="big">31→6 ms/步</span>。这是特定配置的 profiling，未在本项目复测。<a href="https://github.com/vllm-project/vllm/pull/51742">查看原始 PR ↗</a></div>
+      </div>
+    </section>
+
+    <section id="terms" aria-labelledby="terms-title">
+      <div class="section-head"><span class="number">02</span><h2 id="terms-title">group、page、block，各自负责什么？</h2></div>
+      <p class="intro">“page”在旧设计文档里也指过组的总大小。这里统一按源码的单层 spec 口径使用，避免混淆。</p>
+      <div class="two">
+        <div class="panel">
+          <div class="definition"><div class="term">group</div><div><p>共享 block table 和分配规则的层集合。</p><small>例如：10 个 Full 层。不要求模型层编号连续。</small></div></div>
+          <div class="definition"><div class="term">page · p</div><div><p>一个层、一个 block ID 对应的存储。</p><small>Full 页装 B 个 token 的 K/V；linear 页装一份状态。</small></div></div>
+          <div class="definition"><div class="term">block ID</div><div><p>共享池中的分配与生命周期单位。</p><small>一个 ID 同时管理所属组内各层对应的页。</small></div></div>
+          <div class="formula">组块 P<sub>g</sub> = Σ 组内各层的 p<br>池槽 S = max(P<sub>g</sub>)，必要时再对齐<br>池 ID 数 N = floor(KV 预算 / S)</div>
+        </div>
+        <div class="panel">
+          <h3>一个 block ID，覆盖组内多层页</h3>
+          <div class="block-bundle"><div class="bundle-title"><b>Full group · block ID 8</b><span class="pill full">总计 640 KiB</span></div><div class="pages"><div class="page">L0 · 64K</div><div class="page">L1 · 64K</div><div class="page">L2 · 64K</div><div class="page">L3 · 64K</div><div class="page">L4 · 64K</div><div class="page">L5 · 64K</div><div class="page">L6 · 64K</div><div class="page">L7 · 64K</div><div class="page">L8 · 64K</div><div class="page">L9 · 64K</div></div></div>
+          <p class="note" style="margin-top:12px">图中每格为一个 64 KiB 单层页；仅表示逻辑归属，是否地址相邻取决于 layout。</p>
+          <div class="callout">单层页没有另一套独立编号。指定一份页，用 <strong>（层，block ID）</strong>；同组不同层的 KV 数据并不相同。</div>
+          <p class="note" style="margin-top:14px">池 ID 为 0…N−1，0 是 null 占位。各请求、各组共享同一池；同一普通活跃 ID 不会同时分给不同组。一个组释放后，其他组可复用其 ID 和空间。</p>
+        </div>
+      </div>
+      <div class="callout"><strong>token 数影响“领几块”，不是单块装下整条请求。</strong> B=16 时，112 个 token 的 Full 历史需要 7 块；单层一块仍只有 16 个 token 的容量。</div>
+    </section>
+
+    <section id="address" aria-labelledby="address-title">
+      <div class="section-head"><span class="number">03</span><h2 id="address-title">从 block table，一直找到地址</h2></div>
+      <p class="intro">换一个独立的小例子：一个 Full 组、两层、N=4 个池槽。单层页 64 KiB，整个 buffer 为 4×2×64=512 KiB。</p>
+      <div class="panel">
+        <h3>一行表对应一个（请求，group）</h3>
+        <p class="note" style="margin-top:8px"><code>block_tables[group][request][逻辑块序号] = block ID</code>。点击表中的 ID，观察下方地址。</p>
+        <div class="scroll"><table class="id-table"><thead><tr><th scope="col">请求 A · Full 组</th><th scope="col">逻辑块 0<br>token 0–15</th><th scope="col">逻辑块 1<br>token 16–31</th><th scope="col">逻辑块 2<br>token 32–47</th></tr></thead><tbody><tr><th scope="row">池内 block ID</th><td><button class="id-btn" type="button" data-logical="0" aria-label="逻辑块0，ID2" aria-pressed="false">2</button></td><td><button class="id-btn" type="button" data-logical="1" aria-label="逻辑块1，ID1" aria-pressed="false">1</button></td><td><button class="id-btn" type="button" data-logical="2" aria-label="逻辑块2，ID3" aria-pressed="true">3</button></td></tr></tbody></table></div>
+        <p class="note table-note">例如 token 35 → 逻辑块 2 → ID 3，块内位置为 3。下面计算该单层页的起始地址，不含页内偏移。</p>
+        <div class="layout-controls">
+          <div><div class="control-label">同一块大 buffer，切换视图布局</div><div class="segmented" role="group" aria-label="缓存布局"><button type="button" data-layout="layer" aria-pressed="true">先排层 · LBHNC</button><button type="button" data-layout="block" aria-pressed="false">先排 block · BLHNC</button></div></div>
+          <label class="layer-select" for="layer-select">访问层 <select id="layer-select"><option value="0">L0</option><option value="1">L1</option></select></label>
+        </div>
+        <div class="memory-wrap scroll"><div class="memory" id="memory-map" role="img" aria-label="512 KiB buffer内的8个单层页，L0的ID3被选中"><div class="cell null">L0 · b0<small>+0 KiB</small></div><div class="cell">L0 · b1<small>+64 KiB</small></div><div class="cell">L0 · b2<small>+128 KiB</small></div><div class="cell selected">L0 · b3<small>+192 KiB</small></div><div class="cell null">L1 · b0<small>+256 KiB</small></div><div class="cell">L1 · b1<small>+320 KiB</small></div><div class="cell">L1 · b2<small>+384 KiB</small></div><div class="cell peer">L1 · b3<small>+448 KiB</small></div></div></div>
+        <div class="legend memory-legend"><span><i class="dot selected-dot"></i>当前访问的单层页</span><span><i class="dot peer-dot"></i>同 ID、另一个层的页</span><span>b0 为 null 保留槽</span></div>
+        <div class="address-output" aria-live="polite" aria-atomic="true"><div class="address-title"><span id="address-target">L0 · block ID 3</span><span class="note">A = 整个 buffer 的 GPU 虚拟首地址</span></div><div class="address-number" id="address-value">A + 192 KiB</div><div class="address-equation" id="address-equation">A + offset(0) + 层下标(0) × 256 KiB + ID(3) × 64 KiB</div></div>
+        <div class="setup"><span id="layer-stride">layer_stride = 256 KiB</span><span id="block-stride">block_stride = 64 KiB</span><span>总 buffer = 512 KiB</span></div>
+        <p id="layout-explanation" class="note" style="margin-top:14px">先排层：同层的相邻 ID 页相邻；同一个 ID 的两层页相隔 256 KiB。</p>
+        <div class="callout"><strong>view 是访问规则，不是数据副本。</strong> offset 指从哪里开始；stride 指下标加 1，地址跳多少字节。这里展示原始 int8 buffer，按字节计。创建视图不会重新分配整池显存。</div>
+      </div>
+    </section>
+
+    <section id="qwen" aria-labelledby="qwen-title">
+      <div class="section-head"><span class="number">04</span><h2 id="qwen-title">Qwen3.5：一份 checkpoint 到底有多大？</h2></div>
+      <p class="intro">本项目既有 Qwen3.5-27B / TP2 记录：48 个 GDN 层 + 16 个 Full 层，原来共 4 组，每组 16 层。以下数值均为每 rank。</p>
+      <div class="two">
+        <div class="panel"><span class="pill sw">一个 linear 层的一份完整状态</span><div class="state-page" role="img" aria-label="一个linear单层页包含卷积状态、recurrent state和必要padding，图示宽度不代表实际比例"><span>conv state</span><span>recurrent state</span><span>padding</span></div><p class="note">图示不按字节比例绘制。单层页包括该层所需的各状态及必要对齐，不是每个历史 token 一份 state。</p><div class="stat-box"><div class="note">单层页 p</div><div class="key-number">1.53125 <small>MiB</small></div><div class="note mono">1,605,632 bytes</div></div><p class="note" style="margin-top:14px">同配置的 Full 单层页：784 token × 2,048 bytes/token，恰好也是这个大小。Linear 的页保存一个状态点，不保存 784 份状态。</p></div>
+        <div class="panel"><h3>一个 ID，一起管理 16 层状态</h3><div class="stat-box"><div class="note">组块 P<sub>g</sub> = 池槽 S = 16p</div><div class="key-number">24.5 <small>MiB / ID</small></div><div class="note">同组各层在相应边界各有一份状态</div></div><div class="scroll" style="margin-top:18px"><table class="compact"><thead><tr><th>统一拆组</th><th>组数</th><th>每槽 S</th><th>组槽 padding</th></tr></thead><tbody><tr><td>16 层/组</td><td>4</td><td class="numeric">24.5 MiB</td><td>0</td></tr><tr><td>8 层/组</td><td>8</td><td class="numeric">12.25 MiB</td><td>0</td></tr><tr><td>1 层/组</td><td>64</td><td class="numeric">1.53125 MiB</td><td>0</td></tr></tbody></table></div><p class="note table-note">全部等粒度拆小，数据字节可不变，管理块数变多。仅拆 Full 而保留大 GDN 组，S 不变，会增加小组的槽内 padding。</p></div>
+      </div>
+      <div class="init-flow" aria-label="初始化流程"><span class="step">确定 p、group、layout</span><span class="arrow" aria-hidden="true">→</span><span class="step">算 S 和 N</span><span class="arrow" aria-hidden="true">→</span><span class="step">申请 N×S 大 buffer</span><span class="arrow" aria-hidden="true">→</span><span class="step">建立视图与 ID 空闲队列</span></div>
+      <p class="note" style="margin-top:14px">已有 30 GB 预检：N=1,167，backing=29,980,360,704 bytes。运行时分配池 ID，不是每领一块都调用 CUDA 分配。预检未记录实际 layout，前面的布局切换是独立示例。</p>
+    </section>
+
+    <section id="hbm" aria-labelledby="hbm-title">
+      <div class="section-head"><span class="number">05</span><h2 id="hbm-title">HBM 物理页，在另一层地址映射里</h2></div>
+      <p class="intro">vLLM 的 page 是缓存组织单位；底层映射页是驱动与 GPU MMU 管理地址转换的单位。两者没有一对一关系。</p>
+      <div class="translation">
+        <div class="lane"><div class="lane-title">vLLM / 软件索引</div><div class="chain"><span>请求 + group</span><span class="arrow" aria-hidden="true">→</span><span>block table</span><span class="arrow" aria-hidden="true">→</span><span>block ID</span></div><div class="chain" style="margin-top:10px"><span>层 + offset / stride</span><span class="arrow" aria-hidden="true">→</span><span>GPU 虚拟地址</span></div><p class="note" style="margin-top:15px">得到的是 A + 偏移。vLLM 普通 cache manager 不查询“HBM 物理页 ID”。</p></div>
+        <div class="lane"><div class="lane-title">GPU MMU / 驱动建立的映射</div><div class="chain"><span>虚拟页 0 / 1 / 2</span><span class="arrow" aria-hidden="true">→</span><span>实际显存</span></div><div class="physical-pages" aria-label="示意：连续虚拟页映射到物理页91、7、130"><span>物理页 91</span><span>物理页 7</span><span>物理页 130</span></div><p class="note" style="margin-top:15px">编号仅为示意。虚拟地址连续，不保证底层物理位置连续。</p></div>
+      </div>
+      <div class="callout"><strong>实际硬件页尺寸：本次未测得。</strong> 取决于设备、驱动和分配/映射方式，不能从 1.53125 MiB 的 linear 页反推。一个 KV 页可跨多个底层映射页，相邻 KV 页也可能共享某个映射页的不同部分。</div>
+    </section>
+  </main>
+  <footer class="footer"><div class="wrap"><p>范围：固定版本普通共享 KV 池。容量数字为明确假设下的算术或既有记录；未追加引擎 / GPU 实验。不同 backend、TP、state dtype 与特殊池需单独核算。</p><details><summary>来源与进一步阅读</summary><div class="sources"><a href="https://github.com/vllm-project/vllm/issues/11382">原始 RFC：先逐层分配，再合组减少管理开销</a><a href="https://github.com/vllm-project/vllm/pull/13296">早期设计：KV Cache Group 与统一槽尺寸</a><a href="https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/kv_cache_interface.py#L996">单层页、Mamba state 与 group 定义</a><a href="https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/core/kv_cache_utils.py#L1588">共享池 bytes_per_block 与分组规划</a><a href="https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/worker/utils.py#L389">大 buffer 分配与各层视图</a><a href="https://github.com/vllm-project/vllm/pull/52297">管理开销也可优化：提取公共 GDN metadata</a><a href="https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/virtual-memory-management.html">NVIDIA：虚拟地址与物理存储的映射</a><a href="VLLM-HYBRID-GROUP-PAGE-BLOCK.md">完整调研：源码锚点、边界与更多推导</a></div></details><div class="footer-meta"><span>Hybrid workspace · vLLM cache notes</span><span class="mono">ced6857afa0e / v0.30.0</span></div></div></footer>
+  <script>
+    "use strict";
+    (() => {
+      const plans = {
+        type: { slot: 1280, blocks: 9, total: 11.25, padding: 4.375, groups: [ ["Full · 10 层", "P = 640 KiB", "full"], ["SWA · 20 层", "P = 1,280 KiB", "sw"] ], explanation: "最大组决定 S=20p。Full 每块只用 10p、空出 10p：7×20p + 2×20p = 180p，其中 70p 是 padding。" },
+        balanced: { slot: 640, blocks: 11, total: 6.875, padding: 0, groups: [ ["Full · 10 层", "P = 640 KiB", "full"], ["SWA · 10 层", "P = 640 KiB", "sw"], ["SWA · 10 层", "P = 640 KiB", "sw"] ], explanation: "三组的 P 都是 10p，池槽 S=10p。Full 领 7 块，两个 SWA 组各领 2 块，共 11 块。" },
+        layer: { slot: 64, blocks: 110, total: 6.875, padding: 0, groups: [ ["Full：10 组 × 1 层", "每组 P = 64 KiB", "full"], ["SWA：20 组 × 1 层", "每组 P = 64 KiB", "sw"] ], explanation: "所有组统一拆小，S=p。10×7 + 20×2 = 110 块，数据量仍相同；相比 3 组方案，要管理的块数增加 10 倍。" }
+      };
+      const byId = id => document.getElementById(id);
+      document.querySelectorAll("[data-plan]").forEach(button => button.addEventListener("click", () => {
+        const plan = plans[button.dataset.plan];
+        document.querySelectorAll("[data-plan]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+        const fragment = document.createDocumentFragment();
+        plan.groups.forEach(([title, subtitle, kind]) => {
+          const card = document.createElement("div"); card.className = "group-card " + kind;
+          const strong = document.createElement("b"); strong.textContent = title;
+          const span = document.createElement("span"); span.textContent = subtitle;
+          card.append(strong, span); fragment.append(card);
+        });
+        byId("group-map").replaceChildren(fragment);
+        byId("plan-slot").textContent = plan.slot.toLocaleString("en-US") + " KiB";
+        byId("plan-total").textContent = plan.total + " MiB";
+        byId("plan-padding").textContent = plan.padding + " MiB";
+        byId("plan-blocks").textContent = String(plan.blocks);
+        const percentage = 6.875 / plan.total * 100;
+        byId("useful-bar").style.width = percentage + "%";
+        byId("plan-bar-label").textContent = (Number.isInteger(percentage) ? percentage : percentage.toFixed(1)) + "% 有效数据";
+        byId("capacity-bar").setAttribute("aria-label", "有效数据6.875 MiB，槽内padding " + plan.padding + " MiB");
+        byId("plan-explanation").textContent = plan.explanation;
+      }));
+      const blockTable = [2, 1, 3];
+      let layout = "layer", logical = 2;
+      function renderAddress() {
+        const layer = Number(byId("layer-select").value);
+        const block = blockTable[logical];
+        const layerStride = layout === "layer" ? 256 : 64;
+        const blockStride = layout === "layer" ? 64 : 128;
+        const offset = layer * layerStride + block * blockStride;
+        const cells = [];
+        for (let l = 0; l < 2; l++) for (let b = 0; b < 4; b++) cells.push({ layer: l, block: b, offset: l * layerStride + b * blockStride });
+        cells.sort((a, b) => a.offset - b.offset);
+        const fragment = document.createDocumentFragment();
+        cells.forEach(item => {
+          const cell = document.createElement("div");
+          cell.className = "cell" + (item.block === 0 ? " null" : "") + (item.block === block ? item.layer === layer ? " selected" : " peer" : "");
+          cell.textContent = "L" + item.layer + " · b" + item.block;
+          const small = document.createElement("small"); small.textContent = "+" + item.offset + " KiB";
+          cell.append(small); fragment.append(cell);
+        });
+        byId("memory-map").replaceChildren(fragment);
+        byId("memory-map").setAttribute("aria-label", (layout === "layer" ? "先排层" : "先排block") + "的512 KiB buffer，当前选中L" + layer + "的ID" + block + "，偏移" + offset + " KiB");
+        byId("address-target").textContent = "L" + layer + " · block ID " + block;
+        byId("address-value").textContent = "A + " + offset + " KiB";
+        byId("address-equation").textContent = "A + offset(0) + 层下标(" + layer + ") × " + layerStride + " KiB + ID(" + block + ") × " + blockStride + " KiB";
+        byId("layer-stride").textContent = "layer_stride = " + layerStride + " KiB";
+        byId("block-stride").textContent = "block_stride = " + blockStride + " KiB";
+        byId("layout-explanation").textContent = layout === "layer" ? "先排层：同层的相邻 ID 页相邻；同一个 ID 的两层页相隔 256 KiB。" : "先排 block：同一个 ID 的两层页相邻；每个组块连续占 128 KiB。同层相邻 ID 的页相隔 128 KiB。";
+      }
+      document.querySelectorAll("[data-layout]").forEach(button => button.addEventListener("click", () => {
+        layout = button.dataset.layout;
+        document.querySelectorAll("[data-layout]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+        renderAddress();
+      }));
+      document.querySelectorAll("[data-logical]").forEach(button => button.addEventListener("click", () => {
+        logical = Number(button.dataset.logical);
+        document.querySelectorAll("[data-logical]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+        renderAddress();
+      }));
+      byId("layer-select").addEventListener("change", renderAddress);
+      byId("print-button").addEventListener("click", () => window.print());
+    })();
+  </script>
+</body>
+</html>
